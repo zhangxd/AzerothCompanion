@@ -1,0 +1,79 @@
+## Interface: 120000, 120001
+## Title: AzerothCompanion
+## Notes: 艾泽拉斯助手 — 正式服界面辅助工具、冒险手册增强、地图线路导航。
+## Version: 0.1.0
+## IconTexture: Interface\Icons\Trade_Engineering
+## SavedVariables: AzerothCompanionDB
+## SavedVariablesPerCharacter: AzerothCompanionDBChar
+## Author: zhangxd
+
+# ============================================================================
+# Core - Foundation（基础设施）
+# ============================================================================
+Core\Foundation\Namespace.lua
+Locales\zhCN.lua
+Locales\enUS.lua
+Core\Foundation\Runtime.lua
+Core\Foundation\Locales.lua
+Core\Foundation\Config.lua
+Core\Foundation\ModuleRegistry.lua
+
+# ============================================================================
+# Core - API（领域对外 API）
+# ============================================================================
+Core\API\ChatAPI.lua
+Core\API\TooltipAPI.lua
+Core\API\EncounterJournalAPI.lua
+Core\API\QuestlinesAPI.lua
+Core\API\NavigationAPI.lua
+
+# ============================================================================
+# UI（表现层）
+# ============================================================================
+UI\SettingsHost.lua
+
+# ============================================================================
+# Modules（功能模块）
+# ============================================================================
+Modules\Mover.lua
+Modules\TooltipAnchor.lua
+Modules\Chat.lua
+Modules\MinimapButton.lua
+
+# ============================================================================
+# Data（静态数据）
+# ============================================================================
+Data\InstanceMapIDs.lua
+Data\InstanceEntrances.lua
+Data\InstanceDrops_Mount.lua
+Data\QuestTypeNames.lua
+Data\InstanceQuestlines.lua
+Data\NavigationMapNodes.lua
+Data\NavigationMapAssignments.lua
+Data\NavigationInstanceEntrances.lua
+Data\NavigationTaxiEdges.lua
+Data\NavigationUiMapRelations.lua
+Data\NavigationWaypointEdges.lua
+Data\NavigationRouteEdges.lua
+Data\NavigationAbilityTemplates.lua
+Data\NavigationWalkComponents.lua
+
+# ============================================================================
+# Modules（功能模块 - 依赖 Data）
+# ============================================================================
+Modules\EncounterJournal\Shared.lua
+Modules\EncounterJournal\DetailEnhancer.lua
+Modules\EncounterJournal\LockoutOverlay.lua
+Modules\EncounterJournal.lua
+Modules\Navigation\Shared.lua
+Modules\Navigation\RouteBar.lua
+Modules\Navigation\WorldMap.lua
+Modules\Navigation.lua
+Modules\Quest\Shared.lua
+Modules\Quest\QuestNavigation.lua
+Modules\Quest.lua
+
+# ============================================================================
+# Bootstrap（启动入口 - 必须最后）
+# ============================================================================
+Core\Foundation\Bootstrap.lua
