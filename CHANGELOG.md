@@ -1,21 +1,21 @@
 # Changelog / 更新记录
 
-## 0.1.4 - Route Reliability / 路线可靠性
+## 0.1.4 - Release Packaging / 发布链路整理
 
 ### English
 
 #### Highlights
 
-- Route planning now distinguishes between reliable routes and lower-confidence fallback suggestions.
-- Uncertain public transport conditions are no longer presented as fully reliable routes.
-- When a fully reliable route cannot be confirmed, the addon now makes that limitation clear instead of overstating the result.
+- Release packaging metadata has been refined for addon-platform publishing.
+- Player-facing update notes have been cleaned up for clearer release communication.
+- No gameplay or UI behavior changes are introduced in this version.
 
 #### Details
 
-- Route planning prioritizes paths that can be confirmed for the current character.
-- Public transport routes with incomplete condition data are now treated more conservatively.
-- In edge cases, the addon may offer a lower-confidence fallback route instead of presenting uncertain data as guaranteed.
-- Messaging around unavailable or uncertain routes has been refined to better match what the addon can currently verify.
+- `.pkgmeta` and release metadata are now aligned for automated addon-platform packaging.
+- Release notes are written in a clearer player-facing style for both GitHub and addon-platform pages.
+- The release repository is kept focused on installable addon files and player-facing documentation.
+- This version mainly improves packaging and release presentation rather than in-game behavior.
 
 #### Compatibility
 
@@ -25,16 +25,16 @@
 
 #### 本次重点
 
-- 地图导航现在会区分可靠路线与低置信度的兜底建议。
-- 不再把条件不确定的公共交通路线直接当作可靠路线展示。
-- 当插件暂时无法确认完全可靠的路线时，会更明确地提示当前限制，而不是把结果说得过满。
+- 自动发布到插件平台所需的打包元数据已进一步整理。
+- 面向玩家的更新说明已清理得更直观、更适合公开发布页面阅读。
+- 本版本不引入新的玩法功能或界面行为变化。
 
 #### 详细说明
 
-- 路线规划会优先使用当前角色可以确认可用的路径。
-- 对条件数据不完整的公共交通路线，现在会采用更保守的展示方式。
-- 在少数边界场景下，插件可能给出低置信度的兜底建议，而不会把不确定数据当成必然可达。
-- 无法确认或暂时不可规划的情况会用更直观的提示说明当前状态。
+- `.pkgmeta` 与发布元数据已对齐，便于后续插件平台自动打包。
+- GitHub 与插件平台使用的更新说明改为更清晰的玩家口径。
+- 发布仓库会继续只保留可安装插件文件与玩家可读说明。
+- 这一版主要整理发布链路与展示内容，不涉及新的游戏内功能逻辑。
 
 #### 兼容性
 
