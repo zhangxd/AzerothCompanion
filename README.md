@@ -1,6 +1,6 @@
 # AzerothCompanion - 艾泽拉斯助手
 
-当前版本：0.1.1
+当前版本：0.1.2
 
 `AzerothCompanion`（艾泽拉斯助手）是面向魔兽世界正式服（Retail）的界面辅助插件，聚焦界面辅助、冒险手册增强、地图线路导航和实验性任务浏览。
 
@@ -63,7 +63,7 @@
 
 ## 安装
 
-1. 在 GitHub Releases 下载 `AzerothCompanion-0.1.1.zip`。
+1. 在 GitHub Releases 下载 `AzerothCompanion-0.1.2.zip`。
 2. 解压后确认目录结构为 `_retail_\Interface\AddOns\AzerothCompanion\AzerothCompanion.toc`。
 3. 启动游戏，在插件列表中启用 **AzerothCompanion**。
 
