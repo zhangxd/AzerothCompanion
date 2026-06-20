@@ -572,6 +572,7 @@ local WORLD_MAP_RESIZE_MARK_OFFSETS = { 7, 12, 17 } -- 世界地图改大小角�
 local WORLD_MAP_MIN_WIDTH = 520 -- 世界地图允许的最小宽度
 local WORLD_MAP_MIN_HEIGHT = 360 -- 世界地图允许的最小高度
 local WORLD_MAP_RESIZE_EPSILON = 0.5 -- 世界地图尺寸变化小于该值时跳过重复刷新
+local WORLD_MAP_SCALE_EPSILON = 0.001 -- 世界地图整体缩放变化小于该值时跳过
 local GUILD_PANEL_TAB_KEYS = { -- 会触发布局重排的左侧页签字段名
   "ChatTab",
   "RosterTab",
@@ -655,56 +656,93 @@ local function readFrameRight(frame)
   return nil
 end
 
---- 重算世界地图视口缩放；不重建地图画布，避免拖动 resize 时闪烁。
----@param frame Frame|nil 世界地图根框体
----@param notifyCanvas boolean|nil 是否通知地图 pin / data provider 尺寸变化
----@return boolean refreshed 是否完成视口刷新
-local function refreshWorldMapViewportScale(frame, notifyCanvas)
-  if not frame then
-    return false
+--- 安全读取 Frame 的本体缩放；缺失或异常时按未缩放处理。
+---@param frame Frame|nil 目标 Frame
+---@return number scaleValue 当前本体缩放
+local function readFrameScale(frame)
+  if not frame or type(frame.GetScale) ~= "function" then
+    return 1
   end
-  local scrollContainer = frame.ScrollContainer -- Blizzard 地图滚动画布
-  if scrollContainer
-      and type(scrollContainer.CreateZoomLevels) == "function"
-      and type(scrollContainer.ResetZoom) == "function" then
-    local success = pcall(function()
-      scrollContainer:CreateZoomLevels()
-      scrollContainer:ResetZoom()
-      if notifyCanvas and type(frame.OnCanvasSizeChanged) == "function" then
-        frame:OnCanvasSizeChanged()
-      end
-    end)
-    if success then
-      return true
-    end
+  local success, rawValue = pcall(function() -- Blizzard Frame 缩放读取
+    return frame:GetScale()
+  end)
+  local scaleValue = success and tonumber(rawValue) or nil -- 数字化缩放
+  if scaleValue and scaleValue > 0 then
+    return scaleValue
   end
-  return false
+  return 1
 end
 
---- 刷新世界地图内部画布；仅作为缩放重算失败时的兜底重建路径。
+--- 安全读取 Frame 的有效缩放；用于把屏幕光标坐标折算到当前 Frame 的锚点坐标系。
+---@param frame Frame|nil 目标 Frame
+---@return number scaleValue 当前有效缩放
+local function readFrameEffectiveScale(frame)
+  if not frame or type(frame.GetEffectiveScale) ~= "function" then
+    return 1
+  end
+  local success, rawValue = pcall(function() -- Blizzard Frame 有效缩放读取
+    return frame:GetEffectiveScale()
+  end)
+  local scaleValue = success and tonumber(rawValue) or nil -- 数字化缩放
+  if scaleValue and scaleValue > 0 then
+    return scaleValue
+  end
+  return 1
+end
+
+--- 仅在需要时设置世界地图根缩放。
 ---@param frame Frame|nil 世界地图根框体
----@param notifyCanvas boolean|nil 是否通知地图 pin / data provider 尺寸变化
-local function refreshWorldMapFrameSize(frame, notifyCanvas)
-  if refreshWorldMapViewportScale(frame, notifyCanvas) then
-    return
+---@param scaleValue number 目标缩放
+---@return boolean changed 是否实际改变缩放
+local function setWorldMapRootScale(frame, scaleValue)
+  if not frame or type(frame.SetScale) ~= "function" then
+    return false
   end
+  local normalizedScale = tonumber(scaleValue) or 1 -- 归一目标缩放
+  if normalizedScale <= 0 then
+    normalizedScale = 1
+  end
+  if math.abs(readFrameScale(frame) - normalizedScale) < WORLD_MAP_SCALE_EPSILON then
+    return false
+  end
+  frame:SetScale(normalizedScale)
+  return true
+end
+
+--- 优先读取当前 TOPLEFT 锚点偏移；缩放后的边界读数不一定适合反推存档锚点。
+---@param frame Frame|nil 目标 Frame
+---@return number|nil offsetX TOPLEFT 横向偏移
+---@return number|nil offsetY TOPLEFT 纵向偏移
+local function readTopLeftPointOffset(frame)
+  if not frame or type(frame.GetPoint) ~= "function" then
+    return nil, nil
+  end
+  local pointName, relativeFrame, relativePoint, offsetX, offsetY = frame:GetPoint()
+  if pointName ~= "TOPLEFT" or relativePoint ~= "TOPLEFT" then
+    return nil, nil
+  end
+  if relativeFrame and relativeFrame ~= UIParent then
+    return nil, nil
+  end
+  return tonumber(offsetX) or 0, tonumber(offsetY) or 0
+end
+
+--- 从缩放后的边界读数反推 TOPLEFT 锚点偏移。
+---@param frame Frame|nil 目标 Frame
+---@return number|nil offsetX TOPLEFT 横向偏移
+---@return number|nil offsetY TOPLEFT 纵向偏移
+local function readTopLeftOffsetFromBounds(frame)
   if not frame then
-    return
+    return nil, nil
   end
-  local scrollContainer = frame.ScrollContainer -- Blizzard 地图滚动画布
-  if scrollContainer and type(scrollContainer.OnCanvasSizeChanged) == "function" then
-    local success = pcall(function()
-      scrollContainer:OnCanvasSizeChanged()
-    end)
-    if success then
-      return
-    end
+  local left, top = frame:GetLeft(), frame:GetTop()
+  local parentLeft, parentTop = UIParent:GetLeft(), UIParent:GetTop()
+  if not left or not top or not parentLeft or not parentTop then
+    return nil, nil
   end
-  if type(frame.OnFrameSizeChanged) == "function" then
-    pcall(function()
-      frame:OnFrameSizeChanged()
-    end)
-  end
+  local parentScale = readFrameEffectiveScale(UIParent) -- UIParent 有效缩放
+  local targetScale = readFrameEffectiveScale(frame) -- 目标 Frame 有效缩放
+  return left - parentLeft * parentScale / targetScale, top - parentTop * parentScale / targetScale
 end
 
 --- 重新应用单个地图 pin 的当前归一化位置；地图层级切换后用于修正玩家箭头覆盖层锚点。
@@ -762,55 +800,45 @@ local function installWorldMapPinPositionRefreshHook(frame)
   end
 end
 
---- 读取世界地图 resize 需要的地图视口尺寸；ScrollContainer 不包含标题和底部 chrome。
+--- 读取世界地图视觉尺寸；逻辑宽高保持 Blizzard 原生值，视觉尺寸由整体 scale 得到。
 ---@param frame Frame|nil 世界地图根框体
----@param rootWidth number 根框体宽度
----@param rootHeight number 根框体高度
----@return number viewportWidth 地图视口宽度
----@return number viewportHeight 地图视口高度
----@return number chromeWidth 根框体非地图宽度
----@return number chromeHeight 根框体非地图高度
----@return number aspectRatio 地图视口宽高比
-local function readWorldMapResizeMetrics(frame, rootWidth, rootHeight)
-  local viewportWidth = rootWidth -- 地图视口宽度
-  local viewportHeight = rootHeight -- 地图视口高度
-  local scrollContainer = frame and frame.ScrollContainer or nil -- Blizzard 地图滚动画布
-  local scrollWidth = readFrameDimension(scrollContainer, "GetWidth") -- ScrollContainer 当前宽度
-  local scrollHeight = readFrameDimension(scrollContainer, "GetHeight") -- ScrollContainer 当前高度
-  if scrollWidth and scrollHeight and scrollWidth > 0 and scrollHeight > 0 then
-    viewportWidth = math.min(scrollWidth, rootWidth)
-    viewportHeight = math.min(scrollHeight, rootHeight)
+---@return number|nil visualWidth 世界地图视觉宽度
+---@return number|nil visualHeight 世界地图视觉高度
+local function readWorldMapVisualSize(frame)
+  local baseWidth = readFrameDimension(frame, "GetWidth") -- Blizzard 原生逻辑宽度
+  local baseHeight = readFrameDimension(frame, "GetHeight") -- Blizzard 原生逻辑高度
+  if not baseWidth or not baseHeight then
+    return nil, nil
   end
-  local chromeWidth = math.max(0, rootWidth - viewportWidth) -- 根框体横向非地图区域
-  local chromeHeight = math.max(0, rootHeight - viewportHeight) -- 根框体纵向非地图区域
-  local aspectRatio = viewportWidth / viewportHeight -- 地图视口宽高比
-  return viewportWidth, viewportHeight, chromeWidth, chromeHeight, aspectRatio
+  local scaleValue = readFrameScale(frame) -- 当前整体缩放
+  return baseWidth * scaleValue, baseHeight * scaleValue
 end
 
---- 把待恢复的世界地图根框体尺寸归一到当前地图视口比例，兼容旧版本保存的整窗比例。
+--- 把待恢复的世界地图视觉尺寸折算为整体 scale。
+--- 不改 `WorldMapFrame:SetSize()`：MapCanvas 的贴图、迷雾和区域层依赖原生画布尺寸。
 ---@param frame Frame|nil 世界地图根框体
----@param widthValue number 待恢复宽度
----@param heightValue number 待恢复高度
----@return number normalizedWidth 归一后的宽度
----@return number normalizedHeight 归一后的高度
-local function normalizeWorldMapSizeToViewportRatio(frame, widthValue, heightValue)
-  local currentWidth = readFrameDimension(frame, "GetWidth") or widthValue -- 当前根框体宽度
-  local currentHeight = readFrameDimension(frame, "GetHeight") or heightValue -- 当前根框体高度
-  if currentWidth <= 0 or currentHeight <= 0 then
-    return widthValue, heightValue
+---@param widthValue number 待恢复视觉宽度
+---@param heightValue number 待恢复视觉高度
+---@return number scaleValue 归一后的整体缩放
+local function calculateWorldMapScaleFromVisualSize(frame, widthValue, heightValue)
+  local baseWidth = readFrameDimension(frame, "GetWidth") or widthValue -- Blizzard 原生逻辑宽度
+  local baseHeight = readFrameDimension(frame, "GetHeight") or heightValue -- Blizzard 原生逻辑高度
+  if baseWidth <= 0 or baseHeight <= 0 then
+    return 1
   end
-  local _, _, chromeWidth, chromeHeight, aspectRatio = readWorldMapResizeMetrics(frame, currentWidth, currentHeight) -- 当前地图视口比例
-  if chromeWidth <= 0 and chromeHeight <= 0 then
-    return widthValue, heightValue
+  local widthScale = widthValue / baseWidth -- 视觉宽度对应缩放
+  local heightScale = heightValue / baseHeight -- 视觉高度对应缩放
+  local scaleValue = widthScale -- 最终整体缩放
+  local widthBasedHeight = baseHeight * widthScale -- 保留宽度时的视觉高度
+  local heightBasedWidth = baseWidth * heightScale -- 保留高度时的视觉宽度
+  if math.abs(heightBasedWidth - widthValue) < math.abs(widthBasedHeight - heightValue) then
+    scaleValue = heightScale
   end
-  local requestedViewportWidth = math.max(1, widthValue - chromeWidth) -- 待恢复地图视口宽度
-  local requestedViewportHeight = math.max(1, heightValue - chromeHeight) -- 待恢复地图视口高度
-  local widthBasedHeight = requestedViewportWidth / aspectRatio + chromeHeight -- 保留宽度时的根高度
-  local heightBasedWidth = requestedViewportHeight * aspectRatio + chromeWidth -- 保留高度时的根宽度
-  if math.abs(widthBasedHeight - heightValue) <= math.abs(heightBasedWidth - widthValue) then
-    return widthValue, widthBasedHeight
+  local minScale = math.max(WORLD_MAP_MIN_WIDTH / baseWidth, WORLD_MAP_MIN_HEIGHT / baseHeight) -- 最小允许缩放
+  if scaleValue < minScale then
+    scaleValue = minScale
   end
-  return heightBasedWidth, heightValue
+  return scaleValue
 end
 
 --- 对世界地图存档记录补充当前尺寸。
@@ -821,78 +849,68 @@ local function addWorldMapSizeToSavedRecord(frame, key, savedRecord)
   if key ~= WORLD_MAP_PANEL_KEY or type(savedRecord) ~= "table" then
     return
   end
-  local widthValue = readFrameDimension(frame, "GetWidth") -- 当前世界地图宽度
-  local heightValue = readFrameDimension(frame, "GetHeight") -- 当前世界地图高度
+  local widthValue, heightValue = readWorldMapVisualSize(frame) -- 当前世界地图视觉尺寸
   if widthValue and heightValue then
     savedRecord.width = widthValue
     savedRecord.height = heightValue
   end
 end
 
---- 从存档恢复世界地图尺寸；位置恢复仍由通用 Blizzard 面板路径处理。
+--- 从存档恢复世界地图视觉尺寸；位置恢复仍由通用 Blizzard 面板路径处理。
 ---@param frame Frame|nil 世界地图根框体
 ---@param key string 存档键
 ---@param savedRecord table|nil 当前存档记录
 local function restoreWorldMapSizeFromSavedRecord(frame, key, savedRecord)
-  if key ~= WORLD_MAP_PANEL_KEY or not frame or type(savedRecord) ~= "table" or type(frame.SetSize) ~= "function" then
+  if key ~= WORLD_MAP_PANEL_KEY or not frame or type(savedRecord) ~= "table" or type(frame.SetScale) ~= "function" then
     return
   end
-  local widthValue = tonumber(savedRecord.width) -- 存档宽度
-  local heightValue = tonumber(savedRecord.height) -- 存档高度
+  local widthValue = tonumber(savedRecord.width) -- 存档视觉宽度
+  local heightValue = tonumber(savedRecord.height) -- 存档视觉高度
   if widthValue and heightValue and widthValue > 0 and heightValue > 0 then
-    widthValue, heightValue = normalizeWorldMapSizeToViewportRatio(frame, widthValue, heightValue)
-    local currentWidth = readFrameDimension(frame, "GetWidth") -- 当前宽度
-    local currentHeight = readFrameDimension(frame, "GetHeight") -- 当前高度
-    if currentWidth and currentHeight
-        and math.abs(currentWidth - widthValue) < WORLD_MAP_RESIZE_EPSILON
-        and math.abs(currentHeight - heightValue) < WORLD_MAP_RESIZE_EPSILON then
-      return
-    end
-    frame:SetSize(widthValue, heightValue)
-    refreshWorldMapFrameSize(frame, true)
+    local scaleValue = calculateWorldMapScaleFromVisualSize(frame, widthValue, heightValue) -- 归一整体缩放
+    setWorldMapRootScale(frame, scaleValue)
   end
 end
 
---- 按拖动起点宽高比计算世界地图下一帧尺寸。
+--- 按拖动起点宽高比计算世界地图下一帧视觉尺寸与整体 scale。
 ---@param resizeState table 当前改大小状态
 ---@param deltaX number 鼠标横向位移
 ---@param deltaY number 鼠标向下位移
----@return number nextWidth 新宽度
----@return number nextHeight 新高度
+---@return number nextWidth 新视觉宽度
+---@return number nextHeight 新视觉高度
+---@return number nextScale 新整体缩放
 local function calculateWorldMapResizeSize(resizeState, deltaX, deltaY)
-  local aspectRatio = resizeState.aspectRatio or resizeState.startViewportWidth / resizeState.startViewportHeight -- 起点地图视口宽高比
-  local widthDrivenHeightDelta = deltaX / aspectRatio -- 横向位移折算出的视口高度位移
+  local aspectRatio = resizeState.aspectRatio or resizeState.startVisualWidth / resizeState.startVisualHeight -- 起点视觉宽高比
+  local widthDrivenHeightDelta = deltaX / aspectRatio -- 横向位移折算出的视觉高度位移
   local heightDelta = deltaY -- 最终高度位移
   if math.abs(widthDrivenHeightDelta) >= math.abs(deltaY) then
     heightDelta = widthDrivenHeightDelta
   end
-  local nextViewportHeight = resizeState.startViewportHeight + heightDelta -- 按比例得到的新视口高度
-  local nextViewportWidth = resizeState.startViewportWidth + heightDelta * aspectRatio -- 按比例得到的新视口宽度
-  local minViewportWidth = math.max(1, WORLD_MAP_MIN_WIDTH - (resizeState.chromeWidth or 0)) -- 最小地图视口宽度
-  local minViewportHeight = math.max(1, WORLD_MAP_MIN_HEIGHT - (resizeState.chromeHeight or 0)) -- 最小地图视口高度
-  local minScale = math.max(minViewportWidth / resizeState.startViewportWidth, minViewportHeight / resizeState.startViewportHeight) -- 最小允许缩放
-  local nextScale = nextViewportHeight / resizeState.startViewportHeight -- 当前视口缩放比例
+  local nextHeight = resizeState.startVisualHeight + heightDelta -- 按比例得到的新视觉高度
+  local nextWidth = resizeState.startVisualWidth + heightDelta * aspectRatio -- 按比例得到的新视觉宽度
+  local minScale = math.max(WORLD_MAP_MIN_WIDTH / resizeState.baseWidth, WORLD_MAP_MIN_HEIGHT / resizeState.baseHeight) -- 最小允许缩放
+  local nextScale = nextHeight / resizeState.baseHeight -- 当前整体缩放
   if nextScale < minScale then
     nextScale = minScale
-    nextViewportWidth = resizeState.startViewportWidth * nextScale
-    nextViewportHeight = resizeState.startViewportHeight * nextScale
+    nextWidth = resizeState.baseWidth * nextScale
+    nextHeight = resizeState.baseHeight * nextScale
   end
-  local nextWidth = nextViewportWidth + (resizeState.chromeWidth or 0) -- 加回根框体非地图宽度
-  local nextHeight = nextViewportHeight + (resizeState.chromeHeight or 0) -- 加回根框体非地图高度
-  return nextWidth, nextHeight
+  return nextWidth, nextHeight, nextScale
 end
 
 local function saveAsTopLeft(frame, key, moverFrames)
-  local left, top = frame:GetLeft(), frame:GetTop()
-  local ul, ut = UIParent:GetLeft(), UIParent:GetTop()
-  if not left or not top or not ul or not ut then
-    return false
+  local originX, originY = readTopLeftPointOffset(frame) -- 当前 TOPLEFT 锚点偏移
+  if not originX or not originY then
+    originX, originY = readTopLeftOffsetFromBounds(frame)
+    if not originX or not originY then
+      return false
+    end
   end
   moverFrames[key] = {
     point = "TOPLEFT",
     rel = "TOPLEFT",
-    x = left - ul,
-    y = top - ut,
+    x = originX,
+    y = originY,
   }
   addWorldMapSizeToSavedRecord(frame, key, moverFrames[key])
   return true
@@ -910,6 +928,47 @@ local function migrateSavedToTopLeft(frame, key, s)
     return moverFrames[key]
   end
   return s
+end
+
+--- 修复旧版在世界地图缩放后用边界坐标写坏的 TOPLEFT y。
+---@param frame Frame|nil 世界地图根框体
+---@param key string 存档键
+---@param savedRecord table|nil 当前存档记录
+---@return boolean repaired 是否修复
+local function repairLegacyWorldMapSavedPosition(frame, key, savedRecord)
+  if key ~= WORLD_MAP_PANEL_KEY or not frame or type(savedRecord) ~= "table" then
+    return false
+  end
+  if savedRecord.point ~= "TOPLEFT" or savedRecord.rel and savedRecord.rel ~= "TOPLEFT" then
+    return false
+  end
+  local savedY = tonumber(savedRecord.y) -- 当前存档 y
+  local widthValue = tonumber(savedRecord.width) -- 当前存档视觉宽度
+  local heightValue = tonumber(savedRecord.height) -- 当前存档视觉高度
+  local parentTop = UIParent:GetTop() -- UIParent 顶部
+  local baseHeight = readFrameDimension(frame, "GetHeight") -- Blizzard 原生逻辑高度
+  if not savedY or not widthValue or not heightValue or not parentTop or not baseHeight then
+    return false
+  end
+  local scaleValue = calculateWorldMapScaleFromVisualSize(frame, widthValue, heightValue) -- 存档视觉尺寸对应缩放
+  if scaleValue <= 1 + WORLD_MAP_SCALE_EPSILON then
+    return false
+  end
+  local bottomValue = parentTop + savedY * scaleValue - baseHeight * scaleValue -- 当前存档会恢复出的底边
+  if bottomValue >= 0 then
+    return false
+  end
+  local repairedY = savedY + parentTop * (1 - 1 / scaleValue) -- 旧版边界坐标反算回锚点偏移
+  local repairedBottom = parentTop + repairedY * scaleValue - baseHeight * scaleValue -- 修复后的底边
+  if repairedBottom < 0 then
+    repairedY = math.max(baseHeight - parentTop / scaleValue, repairedY)
+  end
+  local roundedY = math.floor(repairedY + 0.5) -- 接近整数时清理浮点误差
+  if math.abs(repairedY - roundedY) < WORLD_MAP_SCALE_EPSILON then
+    repairedY = roundedY
+  end
+  savedRecord.y = repairedY
+  return true
 end
 
 local function saveBlizzardPanel(frame, key)
@@ -939,6 +998,10 @@ local function restoreBlizzardPanel(frame, key)
     return
   end
   s = migrateSavedToTopLeft(frame, key, s)
+  if repairLegacyWorldMapSavedPosition(frame, key, s) then
+    moverFrames[key] = s
+    setMoverFrames(moverFrames)
+  end
   frame:ClearAllPoints()
   if s.point == "TOPLEFT" then
     frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", s.x, s.y)
@@ -1212,6 +1275,14 @@ local function ensureWorldMapResizeHandle(frame)
   resizeHandle:SetSize(WORLD_MAP_RESIZE_HANDLE_SIZE, WORLD_MAP_RESIZE_HANDLE_SIZE)
   resizeHandle:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", WORLD_MAP_RESIZE_HANDLE_OFFSET, -WORLD_MAP_RESIZE_HANDLE_OFFSET)
   pcall(function()
+    if type(resizeHandle.SetFrameStrata) == "function" then
+      resizeHandle:SetFrameStrata("TOOLTIP")
+    end
+    if type(resizeHandle.SetToplevel) == "function" then
+      resizeHandle:SetToplevel(true)
+    end
+  end)
+  pcall(function()
     local layerFrame = frame.BorderFrame or frame -- 世界地图层级参考框体
     local frameLevel = layerFrame.GetFrameLevel and layerFrame:GetFrameLevel() or 0 -- 世界地图边框层级
     resizeHandle:SetFrameLevel(frameLevel + 30)
@@ -1234,22 +1305,23 @@ local function startWorldMapResize(frame, resizeHandle)
   end
   local cursorStartX, cursorStartY = GetCursorPosition() -- 鼠标起点坐标
   cursorStartX, cursorStartY = cursorStartX / parentScale, cursorStartY / parentScale
-  local startWidth = readFrameDimension(frame, "GetWidth") or WORLD_MAP_MIN_WIDTH -- 起始宽度
-  local startHeight = readFrameDimension(frame, "GetHeight") or WORLD_MAP_MIN_HEIGHT -- 起始高度
-  local viewportWidth, viewportHeight, chromeWidth, chromeHeight, aspectRatio = readWorldMapResizeMetrics(frame, startWidth, startHeight) -- 地图视口与 chrome 尺寸
+  local baseWidth = readFrameDimension(frame, "GetWidth") or WORLD_MAP_MIN_WIDTH -- Blizzard 原生逻辑宽度
+  local baseHeight = readFrameDimension(frame, "GetHeight") or WORLD_MAP_MIN_HEIGHT -- Blizzard 原生逻辑高度
+  local startScale = readFrameScale(frame) -- 起始整体缩放
+  local startVisualWidth = baseWidth * startScale -- 起始视觉宽度
+  local startVisualHeight = baseHeight * startScale -- 起始视觉高度
   resizeHandle.__azerothCompanion_mm_resize = {
     targetFrame = frame,
     startX = cursorStartX,
     startY = cursorStartY,
-    startWidth = startWidth,
-    startHeight = startHeight,
-    startViewportWidth = viewportWidth,
-    startViewportHeight = viewportHeight,
-    chromeWidth = chromeWidth,
-    chromeHeight = chromeHeight,
-    aspectRatio = aspectRatio,
-    lastWidth = startWidth,
-    lastHeight = startHeight,
+    baseWidth = baseWidth,
+    baseHeight = baseHeight,
+    startScale = startScale,
+    startVisualWidth = startVisualWidth,
+    startVisualHeight = startVisualHeight,
+    aspectRatio = startVisualWidth / startVisualHeight,
+    lastWidth = startVisualWidth,
+    lastHeight = startVisualHeight,
   }
   resizeHandle:SetScript("OnUpdate", function(self)
     local resizeState = self.__azerothCompanion_mm_resize -- 当前改大小状态
@@ -1261,15 +1333,14 @@ local function startWorldMapResize(frame, resizeHandle)
     local deltaX = currentCursorX - resizeState.startX -- 鼠标横向位移
     local deltaY = resizeState.startY - currentCursorY -- 鼠标向下位移
     local targetFrame = resizeState.targetFrame -- 世界地图根框体
-    local nextWidth, nextHeight = calculateWorldMapResizeSize(resizeState, deltaX, deltaY) -- 按固定宽高比约束的新尺寸
+    local nextWidth, nextHeight, nextScale = calculateWorldMapResizeSize(resizeState, deltaX, deltaY) -- 按固定宽高比约束的新视觉尺寸
     if math.abs(nextWidth - resizeState.lastWidth) < WORLD_MAP_RESIZE_EPSILON
         and math.abs(nextHeight - resizeState.lastHeight) < WORLD_MAP_RESIZE_EPSILON then
       return
     end
     resizeState.lastWidth = nextWidth
     resizeState.lastHeight = nextHeight
-    targetFrame:SetSize(nextWidth, nextHeight)
-    refreshWorldMapFrameSize(targetFrame)
+    targetFrame:SetScale(nextScale)
   end)
 end
 
@@ -1283,7 +1354,6 @@ local function stopWorldMapResize(frame, resizeHandle)
   resizeHandle:SetScript("OnUpdate", nil)
   resizeHandle.__azerothCompanion_mm_resize = nil
   if frame then
-    refreshWorldMapFrameSize(frame, true)
     saveBlizzardPanel(frame, WORLD_MAP_PANEL_KEY)
   end
 end
@@ -1419,20 +1489,18 @@ local function reattachBlizzardPanelLayout(frame, key)
   frame.__azerothCompanion_mm_detached = nil
 end
 
---- 不用 StartMoving：以光标位移驱动 TOPLEFT 相对 UIParent；scale 取拖动起点时 UIParent 有效缩放，拖动中不变更。
+--- 不用 StartMoving：以光标位移驱动 TOPLEFT 相对 UIParent；scale 取拖动起点时目标 Frame 有效缩放，拖动中不变更。
 ---@param frame Frame 要移动的暴雪根 Frame
 ---@param updateDriver Frame|nil OnUpdate 承载 Frame，nil 时使用被移动根框体
 local function blizzardPanelManualDragStart(frame, updateDriver)
-  local ul = UIParent:GetLeft() or 0
-  local ut = UIParent:GetTop() or 0
-  local scale = UIParent:GetEffectiveScale() or 1
-  if scale == 0 then
-    scale = 1
-  end
+  local scale = readFrameEffectiveScale(frame) -- 目标 Frame 当前有效缩放
   local cx, cy = GetCursorPosition()
   cx, cy = cx / scale, cy / scale
-  local fl, ft = frame:GetLeft(), frame:GetTop()
-  if not fl or not ft then
+  local originX, originY = readTopLeftPointOffset(frame) -- 当前 TOPLEFT 锚点偏移
+  if not originX or not originY then
+    originX, originY = readTopLeftOffsetFromBounds(frame)
+  end
+  if not originX or not originY then
     return
   end
   local driverFrame = updateDriver or frame -- OnUpdate 承载对象
@@ -1440,8 +1508,8 @@ local function blizzardPanelManualDragStart(frame, updateDriver)
     targetFrame = frame,
     startX = cx,
     startY = cy,
-    originX = fl - ul,
-    originY = ft - ut,
+    originX = originX,
+    originY = originY,
   }
   driverFrame:SetScript("OnUpdate", function(self)
     local dragState = self.__azerothCompanion_mm_drag -- 当前拖动状态
@@ -1613,12 +1681,95 @@ local function minimizeWorldMapForMover(frame)
   end
 end
 
+--- 记录世界地图小地图状态的根缩放，便于最大化后再最小化时恢复。
+---@param frame Frame|nil 世界地图根框体
+local function rememberWorldMapMinimizedScale(frame)
+  if not frame then
+    return
+  end
+  local scaleValue = readFrameScale(frame) -- 小地图状态整体缩放
+  if scaleValue > 0 and math.abs(scaleValue - 1) >= WORLD_MAP_SCALE_EPSILON then
+    frame.__azerothCompanion_mm_minimized_scale = scaleValue
+  end
+end
+
+--- 世界地图最大化时必须回到根缩放 1，避免全屏地图被小地图尺寸缩放污染。
+---@param frame Frame|nil 世界地图根框体
+local function resetWorldMapScaleForMaximized(frame)
+  if not frame then
+    return
+  end
+  rememberWorldMapMinimizedScale(frame)
+  setWorldMapRootScale(frame, 1)
+end
+
+--- 世界地图返回小地图状态后恢复保存的视觉尺寸。
+---@param frame Frame|nil 世界地图根框体
+local function restoreWorldMapScaleForMinimized(frame)
+  if not frame then
+    return
+  end
+  local moverFrames = getMoverFrames() -- 窗口位置表
+  local savedRecord = moverFrames[WORLD_MAP_PANEL_KEY] -- 世界地图存档记录
+  if type(savedRecord) == "table" and tonumber(savedRecord.width) and tonumber(savedRecord.height) then
+    restoreBlizzardPanel(frame, WORLD_MAP_PANEL_KEY)
+    return
+  end
+  local scaleValue = tonumber(frame.__azerothCompanion_mm_minimized_scale) -- 本次会话记录的缩放
+  if scaleValue and scaleValue > 0 then
+    setWorldMapRootScale(frame, scaleValue)
+  end
+end
+
+--- 安装单个世界地图显示模式缩放 hook。
+---@param frame Frame 世界地图根框体
+---@param methodName string|nil Blizzard 方法名
+---@param callback function hook 回调
+---@return boolean installed 是否安装成功
+local function hookWorldMapScaleModeMethod(frame, methodName, callback)
+  if not methodName or type(frame[methodName]) ~= "function" or type(hooksecurefunc) ~= "function" then
+    return false
+  end
+  local success = pcall(function() -- hooksecurefunc 安装结果
+    hooksecurefunc(frame, methodName, function(self)
+      callback(self or frame)
+    end)
+  end)
+  return success == true
+end
+
+--- 只处理根缩放在最大化 / 小地图状态之间的切换；不接管 WorldMapFrame 显示状态。
+---@param frame Frame|nil 世界地图根框体
+local function installWorldMapScaleModeHooks(frame)
+  if not frame or frame.__azerothCompanion_mm_scalemode_hooked then
+    return
+  end
+  local maximizeMethod = nil -- 最大化用户动作方法
+  if type(frame.HandleUserActionMaximizeSelf) == "function" then
+    maximizeMethod = "HandleUserActionMaximizeSelf"
+  elseif type(frame.Maximize) == "function" then
+    maximizeMethod = "Maximize"
+  end
+  local minimizeMethod = nil -- 最小化用户动作方法
+  if type(frame.HandleUserActionMinimizeSelf) == "function" then
+    minimizeMethod = "HandleUserActionMinimizeSelf"
+  elseif type(frame.Minimize) == "function" then
+    minimizeMethod = "Minimize"
+  end
+  local maximizeHooked = hookWorldMapScaleModeMethod(frame, maximizeMethod, resetWorldMapScaleForMaximized) -- 最大化缩放 hook
+  local minimizeHooked = hookWorldMapScaleModeMethod(frame, minimizeMethod, restoreWorldMapScaleForMinimized) -- 最小化缩放 hook
+  if maximizeHooked or minimizeHooked then
+    frame.__azerothCompanion_mm_scalemode_hooked = true
+  end
+end
+
 --- 为世界地图小地图状态绑定专用标题拖动；不剥离 UIPanel 管线，不 hook 显示状态函数。
 ---@param frame Frame|nil 世界地图根框体
 local function applyWorldMapFrameSafeDrag(frame)
   if not blizzardDragEnabled() or not frame then
     return
   end
+  installWorldMapScaleModeHooks(frame)
   minimizeWorldMapForMover(frame)
   if isWorldMapMaximized(frame) or isWorldMapBlackoutShown(frame) then
     return
@@ -1630,6 +1781,7 @@ local function applyWorldMapFrameSafeDrag(frame)
   end
   stripDragSurface(titleDrag)
   restoreBlizzardPanel(frame, WORLD_MAP_PANEL_KEY)
+  rememberWorldMapMinimizedScale(frame)
   frame.__azerothCompanion_mm_worldmap_inited = true
   pcall(function()
     frame:SetMovable(true)

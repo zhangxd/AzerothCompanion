@@ -75,8 +75,8 @@ function AzerothCompanion.Localization.Apply()
   if AzerothCompanion._gameMenuBtn then
     AzerothCompanion._gameMenuBtn:SetText(AzerothCompanion.Localization.Strings.GAMEMENU_AZEROTHCOMPANION)
   end
-  if _G.AzerothCompanionEJMountFilterLabel and AzerothCompanion.Localization.Strings then
-    _G.AzerothCompanionEJMountFilterLabel:SetText(AzerothCompanion.Localization.Strings.EJ_MOUNT_FILTER_LABEL or "")
+  if _G.AzerothCompanionEJDropFilterLabel and AzerothCompanion.Localization.Strings then
+    _G.AzerothCompanionEJDropFilterLabel:SetText(AzerothCompanion.Localization.Strings.EJ_DROP_FILTER_LABEL or "")
   end
 end
 

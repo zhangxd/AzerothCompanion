@@ -1,7 +1,7 @@
-## Interface: 120000, 120001
+## Interface: 120000, 120001, 120007
 ## Title: AzerothCompanion
 ## Notes: 艾泽拉斯助手 — 正式服界面辅助工具、冒险手册增强、地图线路导航。
-## Version: 0.1.0
+## Version: 0.1.1
 ## IconTexture: Interface\Icons\Trade_Engineering
 ## SavedVariables: AzerothCompanionDB
 ## SavedVariablesPerCharacter: AzerothCompanionDBChar
@@ -45,7 +45,10 @@ Modules\MinimapButton.lua
 # ============================================================================
 Data\InstanceMapIDs.lua
 Data\InstanceEntrances.lua
-Data\InstanceDrops_Mount.lua
+Data\InstanceDrops_Mounts.lua
+Data\InstanceDrops_Pets.lua
+Data\InstanceDrops_Recipes.lua
+Data\InstanceDrops_HousingDecorations.lua
 Data\QuestTypeNames.lua
 Data\InstanceQuestlines.lua
 Data\NavigationMapNodes.lua

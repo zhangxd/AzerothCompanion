@@ -41,6 +41,7 @@ AzerothCompanion.RegisterModule({
   settingsOrder = 40,
   OnModuleLoad = function()
     AzerothCompanion.API.Tooltip.InstallDefaultAnchorHook()
+    AzerothCompanion.API.Tooltip.InstallEncounterJournalTooltipHook()
   end,
   OnModuleEnable = function()
     AzerothCompanion.API.Tooltip.RefreshDriver()

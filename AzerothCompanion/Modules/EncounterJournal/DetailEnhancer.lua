@@ -1,17 +1,13 @@
 --[[
-  冒险指南详情增强与列表“仅坐骑”筛选私有实现。
+  冒险指南详情增强与列表掉落筛选私有实现。
 ]]
 
 local Internal = AzerothCompanion.Modules.EncounterJournal.Internal -- 冒险指南内部命名空间
-local Runtime = Internal.Runtime
-local CreateFrame = Internal.CreateFrame
+local Runtime = Internal.Runtime -- 运行时适配器
+local CreateFrame = Internal.CreateFrame -- Frame 创建函数
 
 local function isModuleEnabled()
   return Internal.IsModuleEnabled()
-end
-
-local function isMountFilterChecked()
-  return Internal.IsMountFilterChecked()
 end
 
 local function getCurrentScrollBox()
@@ -42,138 +38,281 @@ local function resetListNavigationState()
   return Internal.ResetListNavigationState()
 end
 
-local MountFilter = {
-  checkButton = nil,
+local DropFilter = { -- 副本列表掉落筛选控件状态
+  dropdown = nil,
   label = nil,
 }
 
-local ListNavigationPin = {}
-local PIN_BUTTON_KEY = "_AzerothCompanionEntrancePinButton"
-local ROW_HOOKS_INSTALLED_KEY = "_AzerothCompanionEntranceRowHooksInstalled"
+local DROP_TYPE_ORDER = { "mount", "pet", "recipe", "housing_decoration" } -- 列表下拉可勾选的掉落类型顺序
+local DROP_OWNERSHIP_ORDER = { "collected", "uncollected" } -- 合并下拉中的获取状态顺序
+local DETAIL_LOOT_FILTER_ALL = "all" -- 详情页不过滤掉落类型
 
---- 检查是否应显示坐骑筛选 UI
+local ListNavigationPin = {} -- 副本列表入口图钉控制器
+local PIN_BUTTON_KEY = "_AzerothCompanionEntrancePinButton" -- 列表行图钉缓存字段
+local ROW_HOOKS_INSTALLED_KEY = "_AzerothCompanionEntranceRowHooksInstalled" -- 列表行 hook 安装标记字段
+
+--- 读取掉落类型文案。
+---@param dropType string 掉落类型
+---@return string
+local function getDropTypeLabel(dropType)
+  local loc = AzerothCompanion.Localization.Strings or {} -- 本地化文案
+  local labels = { -- 掉落类型显示文案
+    all = loc.EJ_DROP_FILTER_TYPE_ALL or "全部",
+    mount = loc.EJ_DROP_FILTER_TYPE_MOUNT or "坐骑",
+    pet = loc.EJ_DROP_FILTER_TYPE_PET or "宠物",
+    recipe = loc.EJ_DROP_FILTER_TYPE_RECIPE or "图纸",
+    housing_decoration = loc.EJ_DROP_FILTER_TYPE_HOUSING_DECORATION or "住宅装饰",
+  }
+  return labels[dropType] or labels.mount
+end
+
+--- 读取掉落类型下拉摘要。
+---@param selectedTypes table 当前类型勾选集合
+---@return string
+local function getDropTypeSummaryLabel(selectedTypes)
+  local labelList = {} -- 已选类型文案
+  for _, dropType in ipairs(DROP_TYPE_ORDER) do
+    if type(selectedTypes) == "table" and selectedTypes[dropType] == true then
+      labelList[#labelList + 1] = getDropTypeLabel(dropType)
+    end
+  end
+  if #labelList == 0 then
+    return getDropTypeLabel("all")
+  end
+  return table.concat(labelList, "+")
+end
+
+--- 读取获取状态文案。
+---@param ownership string 获取状态
+---@return string
+local function getOwnershipLabel(ownership)
+  local loc = AzerothCompanion.Localization.Strings or {} -- 本地化文案
+  local labels = { -- 获取状态显示文案
+    all = loc.EJ_DROP_FILTER_OWNERSHIP_ALL or "全部",
+    collected = loc.EJ_DROP_FILTER_OWNERSHIP_COLLECTED or "已获取",
+    uncollected = loc.EJ_DROP_FILTER_OWNERSHIP_UNCOLLECTED or "未获取",
+  }
+  return labels[ownership] or labels.all
+end
+
+--- 根据两个状态勾选值归一成单值存档。
+---@param selectedCollected boolean 已获取是否勾选
+---@param selectedUncollected boolean 未获取是否勾选
+---@return string nextOwnership 获取状态存档值
+local function resolveOwnershipSelection(selectedCollected, selectedUncollected)
+  if selectedCollected == true and selectedUncollected ~= true then
+    return "collected"
+  elseif selectedUncollected == true and selectedCollected ~= true then
+    return "uncollected"
+  end
+  return "all"
+end
+
+--- 读取合并下拉摘要。
+---@return string
+local function getDropFilterSummaryLabel()
+  local typeText = getDropTypeSummaryLabel(Internal.GetDropFilterTypes()) -- 类型摘要
+  local ownership = Internal.GetDropFilterOwnership() -- 获取状态
+  if ownership == "all" then
+    return typeText
+  end
+  return typeText .. " · " .. getOwnershipLabel(ownership)
+end
+
+--- 刷新副本列表，让原生列表重建后再应用插件筛选。
+local function refreshListInstances()
+  if type(_G.EncounterJournal_ListInstances) == "function" then
+    pcall(_G.EncounterJournal_ListInstances)
+  end
+end
+
+--- 创建下拉按钮；原生模板不可用时回退到普通按钮。
+---@param parentFrame table 父框体
+---@param frameName string 全局框体名
+---@return table|nil
+local function createDropdownButton(parentFrame, frameName)
+  local success, dropdownButton = pcall(CreateFrame, "DropdownButton", frameName, parentFrame, "WowStyle1DropdownTemplate")
+  if success and dropdownButton then
+    return dropdownButton
+  end
+  return CreateFrame("Button", frameName, parentFrame, "UIPanelButtonTemplate")
+end
+
+--- 设置菜单勾选项；兼容测试替身与 Retail 下拉菜单描述。
+---@param rootDescription table 菜单描述
+---@param optionLabel string 菜单项文本
+---@param isSelectedFunc function 选中判断
+---@param setSelectedFunc function 选中回调
+---@param optionValue any 菜单值
+local function createMenuCheckbox(rootDescription, optionLabel, isSelectedFunc, setSelectedFunc, optionValue)
+  if rootDescription and type(rootDescription.CreateCheckbox) == "function" then
+    rootDescription:CreateCheckbox(optionLabel, isSelectedFunc, setSelectedFunc, optionValue)
+  elseif rootDescription and type(rootDescription.CreateRadio) == "function" then
+    rootDescription:CreateRadio(optionLabel, isSelectedFunc, setSelectedFunc, optionValue)
+  end
+end
+
+--- 检查是否应显示掉落筛选 UI。
 ---@return boolean
-local function shouldShowMountFilterUI()
-  local ej = _G.EncounterJournal
-  local instSel = ej and ej.instanceSelect
-  if not instSel then return false end
+local function shouldShowDropFilterUI()
+  local encounterJournalFrame = _G.EncounterJournal -- 冒险手册根框体
+  local instanceSelectFrame = encounterJournalFrame and encounterJournalFrame.instanceSelect -- 副本列表面板
+  if not instanceSelectFrame then return false end
   return AzerothCompanion.API.EncounterJournal.IsRaidOrDungeonInstanceListTab() == true
 end
 
---- 创建坐骑筛选 UI
-function MountFilter:createUI()
-  if self.checkButton then
+--- 创建掉落筛选 UI。
+function DropFilter:createUI()
+  if self.dropdown then
     self:updateVisibility()
+    self:syncDropdown()
     return
   end
 
-  local ej = _G.EncounterJournal
-  local instSel = ej and ej.instanceSelect
-  if not instSel then return end
-  local anchorTarget = instSel.ExpansionDropdown or instSel -- 按钮锚点目标（优先资料片下拉）
+  local encounterJournalFrame = _G.EncounterJournal -- 冒险手册根框体
+  local instanceSelectFrame = encounterJournalFrame and encounterJournalFrame.instanceSelect -- 副本列表面板
+  if not instanceSelectFrame then return end
+  local anchorTarget = instanceSelectFrame.ExpansionDropdown or instanceSelectFrame -- 按钮锚点目标（优先资料片下拉）
 
-  -- 创建复选框
-  local checkBtn = CreateFrame("CheckButton", "AzerothCompanionEJMountFilterCheck", instSel, "UICheckButtonTemplate")
-  checkBtn:SetSize(22, 22)
-  checkBtn:SetChecked(isMountFilterChecked())
-  checkBtn:SetScript("OnClick", function(btn)
-    if not isModuleEnabled() then
-      btn:SetChecked(false)
-      return
-    end
-    local mountFilterEnabled = btn:GetChecked() and true or false -- 仅坐骑筛选开关
-    Internal.SetAccountSetting("ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED", mountFilterEnabled)
-    local loc = AzerothCompanion.Localization.Strings or {}
-    if mountFilterEnabled then
-      AzerothCompanion.API.Chat.PrintAddonMessage(loc.EJ_MOUNT_FILTER_NOTIFY_ON or "")
-    else
-      AzerothCompanion.API.Chat.PrintAddonMessage(loc.EJ_MOUNT_FILTER_NOTIFY_OFF or "")
-    end
-    if type(_G.EncounterJournal_ListInstances) == "function" then
-      pcall(_G.EncounterJournal_ListInstances)
-    end
-  end)
-  checkBtn:SetScript("OnEnter", function(btn)
-    local loc = AzerothCompanion.Localization.Strings or {}
+  local dropdown = createDropdownButton(instanceSelectFrame, "AzerothCompanionEJDropFilterDropdown") -- 合并掉落筛选下拉
+  dropdown:SetSize(132, 22)
+  if type(dropdown.SetupMenu) == "function" then
+    dropdown:SetupMenu(function(_, rootDescription)
+      for _, dropType in ipairs(DROP_TYPE_ORDER) do
+        local currentType = dropType -- 捕获当前掉落类型
+        createMenuCheckbox(
+          rootDescription,
+          getDropTypeLabel(currentType),
+          function()
+            return Internal.IsDropFilterTypeSelected(currentType)
+          end,
+          function()
+            local wasSelected = Internal.IsDropFilterTypeSelected(currentType) -- 当前是否已选
+            Internal.SetDropFilterTypeSelected(currentType, wasSelected ~= true)
+            DropFilter:syncDropdown()
+            refreshListInstances()
+          end,
+          currentType
+        )
+      end
+      if rootDescription and type(rootDescription.CreateDivider) == "function" then
+        rootDescription:CreateDivider()
+      end
+      for _, ownershipKey in ipairs(DROP_OWNERSHIP_ORDER) do
+        local currentOwnership = ownershipKey -- 捕获当前获取状态
+        createMenuCheckbox(
+          rootDescription,
+          getOwnershipLabel(currentOwnership),
+          function()
+            local ownership = Internal.GetDropFilterOwnership() -- 当前获取状态
+            return ownership == "all" or ownership == currentOwnership
+          end,
+          function()
+            local ownership = Internal.GetDropFilterOwnership() -- 当前获取状态
+            local selectedCollected = ownership == "all" or ownership == "collected" -- 已获取勾选状态
+            local selectedUncollected = ownership == "all" or ownership == "uncollected" -- 未获取勾选状态
+            if currentOwnership == "collected" then
+              selectedCollected = selectedCollected ~= true
+            elseif currentOwnership == "uncollected" then
+              selectedUncollected = selectedUncollected ~= true
+            end
+            local nextOwnership = resolveOwnershipSelection(selectedCollected, selectedUncollected) -- 归一后的状态
+            Internal.SetDropFilterOwnership(nextOwnership)
+            DropFilter:syncDropdown()
+            refreshListInstances()
+          end,
+          currentOwnership
+        )
+      end
+    end)
+  end
+  dropdown:SetScript("OnEnter", function(buttonFrame)
+    local loc = AzerothCompanion.Localization.Strings or {} -- 本地化文案
     if AzerothCompanion.API.Tooltip and AzerothCompanion.API.Tooltip.SetSkipAnchorOverride then
       AzerothCompanion.API.Tooltip.SetSkipAnchorOverride(GameTooltip, true)
     end
-    Runtime.TooltipSetOwner(GameTooltip, btn, "ANCHOR_RIGHT")
+    Runtime.TooltipSetOwner(GameTooltip, buttonFrame, "ANCHOR_RIGHT")
     Runtime.TooltipClear(GameTooltip)
     if not isModuleEnabled() then
-      Runtime.TooltipSetText(GameTooltip, loc.EJ_MOUNT_FILTER_LABEL or "")
-      Runtime.TooltipAddLine(GameTooltip, loc.EJ_MOUNT_FILTER_SETTINGS_DEPENDENCY_DISABLED or "", 1, 0.2, 0.2, true)
+      Runtime.TooltipSetText(GameTooltip, loc.EJ_DROP_FILTER_LABEL or "")
+      Runtime.TooltipAddLine(GameTooltip, loc.EJ_DROP_FILTER_SETTINGS_DEPENDENCY_DISABLED or "", 1, 0.2, 0.2, true)
     else
-      Runtime.TooltipSetText(GameTooltip, loc.EJ_MOUNT_FILTER_HINT or "")
+      Runtime.TooltipSetText(GameTooltip, loc.EJ_DROP_FILTER_HINT or loc.EJ_DROP_FILTER_TYPE_HINT or "")
     end
     Runtime.TooltipShow(GameTooltip)
   end)
-  checkBtn:SetScript("OnLeave", function()
+  dropdown:SetScript("OnLeave", function()
     if AzerothCompanion.API.Tooltip and AzerothCompanion.API.Tooltip.SetSkipAnchorOverride then
       AzerothCompanion.API.Tooltip.SetSkipAnchorOverride(GameTooltip, false)
     end
     Runtime.TooltipHide(GameTooltip)
   end)
 
-  local anchorSuccess = pcall(function() checkBtn:SetPoint("RIGHT", anchorTarget, "LEFT", -8, 0) end)
+  local anchorSuccess = pcall(function()
+    dropdown:SetPoint("RIGHT", anchorTarget, "LEFT", -8, 0)
+  end) -- 锚点设置结果
   if not anchorSuccess then
-    checkBtn:Hide()
+    dropdown:Hide()
     return
   end
 
-  -- 创建标签
-  local label = instSel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  local label = instanceSelectFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall") -- 筛选控件标签
   label:SetJustifyH("RIGHT")
-  label:SetText((AzerothCompanion.Localization.Strings and AzerothCompanion.Localization.Strings.EJ_MOUNT_FILTER_LABEL) or "")
-  pcall(function() label:SetPoint("RIGHT", checkBtn, "LEFT", -4, 0) end)
+  label:SetText((AzerothCompanion.Localization.Strings and AzerothCompanion.Localization.Strings.EJ_DROP_FILTER_LABEL) or "掉落筛选")
+  pcall(function() label:SetPoint("RIGHT", dropdown, "LEFT", -4, 0) end)
 
-  self.checkButton = checkBtn
+  self.dropdown = dropdown
   self.label = label
-  _G.AzerothCompanionEJMountFilterLabel = label
+  _G.AzerothCompanionEJDropFilterLabel = label
+  _G.AzerothCompanionEJDropFilterDropdown = dropdown
+  _G.AzerothCompanionEJDropFilterOwnershipButton = nil
+  _G.AzerothCompanionEJMountFilterLabel = nil
 
+  self:syncDropdown()
   self:updateVisibility()
 end
 
---- 更新坐骑筛选 UI 可见性
-function MountFilter:updateVisibility()
-  if not self.checkButton or not self.label then return end
-  local success, shouldShow = pcall(shouldShowMountFilterUI)
+--- 更新掉落筛选 UI 可见性。
+function DropFilter:updateVisibility()
+  if not self.dropdown or not self.label then return end
+  local success, shouldShow = pcall(shouldShowDropFilterUI) -- 可见性判断结果
   if not success then shouldShow = false end
-  self.checkButton:SetShown(shouldShow == true)
+  self.dropdown:SetShown(shouldShow == true)
   self.label:SetShown(shouldShow == true)
 end
 
---- 同步复选框状态
-function MountFilter:syncCheckbox()
-  if self.checkButton then
-    self.checkButton:SetChecked(isMountFilterChecked())
+--- 同步合并下拉文案。
+function DropFilter:syncDropdown()
+  if self.dropdown then
+    self.dropdown:SetText(getDropFilterSummaryLabel())
   end
 end
 
---- 检查筛选是否激活
+--- 检查筛选是否激活。
 ---@return boolean
-function MountFilter:isActive()
-  return self.checkButton ~= nil
-    and self.checkButton:GetChecked() == true
+function DropFilter:isActive()
+  return self.dropdown ~= nil
     and isModuleEnabled()
-    and shouldShowMountFilterUI()
+    and shouldShowDropFilterUI()
 end
 
---- 应用坐骑筛选
-function MountFilter:applyFilter()
+--- 应用掉落筛选。
+function DropFilter:applyFilter()
   if not self:isActive() then return end
 
-  local box = getCurrentScrollBox()
+  local box = getCurrentScrollBox() -- 当前列表 ScrollBox
   if not box or type(box.GetDataProvider) ~= "function" then return end
 
-  local success, dataProv = pcall(function() return box:GetDataProvider() end)
+  local success, dataProv = pcall(function() return box:GetDataProvider() end) -- 列表数据源读取结果
   if not success or type(dataProv) ~= "table" or type(dataProv.ForEach) ~= "function" then return end
 
-  local toRemove = {}
+  local toRemove = {} -- 待从列表移除的数据项
+  local dropTypes = Internal.GetDropFilterTypes() -- 当前掉落类型筛选
+  local ownership = Internal.GetDropFilterOwnership() -- 当前获取状态筛选
   pcall(function()
     dataProv:ForEach(function(elementData)
-      local jid = getJournalInstanceID(elementData)
-      if jid and not AzerothCompanion.API.EncounterJournal.HasMountDrops(jid) then
+      local journalInstanceID = getJournalInstanceID(elementData) -- 当前列表项副本 ID
+      if journalInstanceID and not AzerothCompanion.API.EncounterJournal.HasMatchingDropsForInstance(journalInstanceID, dropTypes, ownership) then
         toRemove[#toRemove + 1] = elementData
       end
     end)
@@ -392,7 +531,7 @@ function ListNavigationPin:clearInteractionState()
 end
 
 -- ============================================================================
--- 详情页增强对象（仅坐骑筛选 + 标题后锁定文本）
+-- 详情页增强对象（掉落筛选 + 标题后锁定文本）
 -- ============================================================================
 
 local function getCurrentDetailJournalInstanceID()
@@ -482,6 +621,229 @@ local function isDetailInstanceTitleVisible()
   end
   local shownSuccess, shownValue = pcall(function() return titleControl:IsShown() end)
   return shownSuccess and shownValue == true
+end
+
+local detailLootFilterType = DETAIL_LOOT_FILTER_ALL -- 当前详情页临时掉落类型筛选
+
+--- 获取详情页战利品容器。
+---@return table|nil
+local function getDetailLootContainer()
+  local infoFrame = getEncounterInfoFrame() -- 详情信息面板
+  return infoFrame and infoFrame.LootContainer or nil
+end
+
+--- 获取详情页战利品数据源。
+---@return table|nil dataProvider 战利品数据源
+local function getDetailLootDataProvider()
+  local lootContainer = getDetailLootContainer() -- 战利品容器
+  local scrollBox = lootContainer and lootContainer.ScrollBox -- 战利品 ScrollBox
+  if not scrollBox or type(scrollBox.GetDataProvider) ~= "function" then
+    return nil
+  end
+  local success, dataProvider = pcall(function() return scrollBox:GetDataProvider() end) -- 数据源读取结果
+  if success and type(dataProvider) == "table" and type(dataProvider.ForEach) == "function" then
+    return dataProvider
+  end
+  return nil
+end
+
+--- 从详情页战利品 elementData 中读取 itemID。
+---@param elementData table|nil 战利品行数据
+---@return number|nil itemID 物品 ID
+local function getDetailLootItemID(elementData)
+  if type(elementData) ~= "table" then
+    return nil
+  end
+  if type(elementData.itemID) == "number" then
+    return elementData.itemID
+  end
+  if type(elementData.itemInfo) == "table" and type(elementData.itemInfo.itemID) == "number" then
+    return elementData.itemInfo.itemID
+  end
+  local lootIndex = tonumber(elementData.index or elementData.lootIndex) -- Blizzard 战利品索引
+  if lootIndex and C_EncounterJournal and type(C_EncounterJournal.GetLootInfoByIndex) == "function" then
+    local infoSuccess, itemInfo = pcall(C_EncounterJournal.GetLootInfoByIndex, lootIndex)
+    if infoSuccess and type(itemInfo) == "table" and type(itemInfo.itemID) == "number" then
+      return itemInfo.itemID
+    end
+  end
+  return nil
+end
+
+--- 读取原生无栏位过滤值。
+---@return number|string
+local function getNoSlotFilterValue()
+  return Enum and Enum.ItemSlotFilterType and Enum.ItemSlotFilterType.NoFilter or 0
+end
+
+--- 安全触发原生栏位过滤。
+---@param slotFilter any 原生栏位过滤值
+local function setBlizzardSlotFilter(slotFilter)
+  if type(_G.EncounterJournal_SetSlotFilterInternal) == "function" then
+    pcall(_G.EncounterJournal_SetSlotFilterInternal, _G.EncounterJournal, slotFilter)
+  elseif C_EncounterJournal and type(C_EncounterJournal.SetSlotFilter) == "function" then
+    pcall(C_EncounterJournal.SetSlotFilter, slotFilter)
+  end
+end
+
+--- 安全刷新详情页战利品列表。
+local function refreshDetailLoot()
+  if type(_G.EncounterJournal_LootUpdate) == "function" then
+    pcall(_G.EncounterJournal_LootUpdate)
+  end
+end
+
+--- 为详情页栏位下拉创建一个原生栏位单选项。
+---@param rootDescription table 菜单描述
+---@param optionLabel string 菜单项文本
+---@param slotFilter any 原生栏位过滤值
+local function createNativeSlotFilterRadio(rootDescription, optionLabel, slotFilter)
+  if not rootDescription or type(rootDescription.CreateRadio) ~= "function" then
+    return
+  end
+  rootDescription:CreateRadio(
+    optionLabel,
+    function()
+      if detailLootFilterType ~= DETAIL_LOOT_FILTER_ALL then
+        return false
+      end
+      if C_EncounterJournal and type(C_EncounterJournal.GetSlotFilter) == "function" then
+        local success, currentFilter = pcall(C_EncounterJournal.GetSlotFilter)
+        return success and currentFilter == slotFilter
+      end
+      return slotFilter == getNoSlotFilterValue()
+    end,
+    function()
+      detailLootFilterType = DETAIL_LOOT_FILTER_ALL
+      setBlizzardSlotFilter(slotFilter)
+      refreshDetailLoot()
+    end,
+    slotFilter
+  )
+end
+
+--- 构建 Retail 原生栏位过滤值到显示名的映射。
+---@return table filterNameMap 栏位过滤名表
+local function buildSlotFilterNameMap()
+  local enumTable = Enum and Enum.ItemSlotFilterType -- 原生栏位过滤枚举
+  if type(enumTable) ~= "table" then
+    return {}
+  end
+  local filterNameMap = {} -- 原生栏位名表
+  local function addFilter(filterValue, filterName)
+    if filterValue ~= nil and type(filterName) == "string" then
+      filterNameMap[filterValue] = filterName
+    end
+  end
+  addFilter(enumTable.Head, _G.INVTYPE_HEAD)
+  addFilter(enumTable.Neck, _G.INVTYPE_NECK)
+  addFilter(enumTable.Shoulder, _G.INVTYPE_SHOULDER)
+  addFilter(enumTable.Cloak, _G.INVTYPE_CLOAK)
+  addFilter(enumTable.Chest, _G.INVTYPE_CHEST)
+  addFilter(enumTable.Wrist, _G.INVTYPE_WRIST)
+  addFilter(enumTable.Hand, _G.INVTYPE_HAND)
+  addFilter(enumTable.Hands, _G.INVTYPE_HAND)
+  addFilter(enumTable.Waist, _G.INVTYPE_WAIST)
+  addFilter(enumTable.Legs, _G.INVTYPE_LEGS)
+  addFilter(enumTable.Feet, _G.INVTYPE_FEET)
+  addFilter(enumTable.MainHand, _G.INVTYPE_WEAPONMAINHAND)
+  addFilter(enumTable.OffHand, _G.INVTYPE_WEAPONOFFHAND)
+  addFilter(enumTable.Finger, _G.INVTYPE_FINGER)
+  addFilter(enumTable.Trinket, _G.INVTYPE_TRINKET)
+  addFilter(enumTable.Other, _G.EJ_LOOT_SLOT_FILTER_OTHER)
+  return filterNameMap
+end
+
+--- 扫描当前详情页实际存在的原生栏位过滤类型。
+---@return table presentMap 当前战利品存在的栏位过滤集合
+local function getLootSlotsPresent()
+  local presentMap = {} -- 已出现的栏位过滤集合
+  if not C_EncounterJournal or type(C_EncounterJournal.GetSlotFilter) ~= "function" or type(C_EncounterJournal.ResetSlotFilter) ~= "function"
+    or type(C_EncounterJournal.SetSlotFilter) ~= "function" or type(C_EncounterJournal.GetLootInfoByIndex) ~= "function" or type(EJ_GetNumLoot) ~= "function" then
+    return presentMap
+  end
+  local currentFilter = nil -- 扫描前原生栏位过滤
+  local filterSuccess, filterValue = pcall(C_EncounterJournal.GetSlotFilter)
+  if filterSuccess then
+    currentFilter = filterValue
+  end
+  pcall(C_EncounterJournal.ResetSlotFilter)
+  local countSuccess, lootCount = pcall(EJ_GetNumLoot)
+  if countSuccess and type(lootCount) == "number" then
+    for lootIndex = 1, lootCount do
+      local infoSuccess, itemInfo = pcall(C_EncounterJournal.GetLootInfoByIndex, lootIndex)
+      local filterType = infoSuccess and type(itemInfo) == "table" and itemInfo.filterType or nil -- 当前物品栏位过滤
+      if filterType ~= nil then
+        presentMap[filterType] = true
+      end
+    end
+  end
+  if currentFilter ~= nil then
+    pcall(C_EncounterJournal.SetSlotFilter, currentFilter)
+  end
+  return presentMap
+end
+
+--- 添加详情页掉落类型单选项。
+---@param rootDescription table 菜单描述
+---@param dropType string 掉落类型
+local function createDetailLootTypeRadio(rootDescription, dropType)
+  if not rootDescription or type(rootDescription.CreateRadio) ~= "function" then
+    return
+  end
+  rootDescription:CreateRadio(
+    getDropTypeLabel(dropType),
+    function()
+      return detailLootFilterType == dropType
+    end,
+    function()
+      detailLootFilterType = dropType
+      setBlizzardSlotFilter(getNoSlotFilterValue())
+      refreshDetailLoot()
+    end,
+    dropType
+  )
+end
+
+--- 为详情页原“所有栏位”下拉安装插件类型筛选选项。
+local function setupDetailLootSlotFilterDropdown()
+  local lootContainer = getDetailLootContainer() -- 战利品容器
+  local slotFilter = lootContainer and (lootContainer.slotFilter or lootContainer.SlotFilter) -- 原生栏位下拉
+  if not slotFilter or type(slotFilter.SetupMenu) ~= "function" then
+    return
+  end
+  slotFilter._AzerothCompanionDetailLootFilterInstalled = true
+  slotFilter:SetupMenu(function(_, rootDescription)
+    if rootDescription and type(rootDescription.SetTag) == "function" then
+      rootDescription:SetTag("MENU_AZEROTHCOMPANION_EJ_DETAIL_LOOT_FILTER")
+    end
+    createNativeSlotFilterRadio(rootDescription, _G.ALL_INVENTORY_SLOTS or "所有栏位", getNoSlotFilterValue())
+    local slotNameMap = buildSlotFilterNameMap() -- 原生栏位名表
+    local presentMap = getLootSlotsPresent() -- 当前掉落存在的栏位
+    local currentSlotFilter = nil -- 当前原生栏位过滤
+    if C_EncounterJournal and type(C_EncounterJournal.GetSlotFilter) == "function" then
+      local filterSuccess, filterValue = pcall(C_EncounterJournal.GetSlotFilter)
+      if filterSuccess then
+        currentSlotFilter = filterValue
+      end
+    end
+    for slotFilterValue, slotName in pairs(slotNameMap) do
+      if slotName and (presentMap[slotFilterValue] == true or currentSlotFilter == slotFilterValue) then
+        createNativeSlotFilterRadio(rootDescription, slotName, slotFilterValue)
+      end
+    end
+    if rootDescription and type(rootDescription.CreateDivider) == "function" then
+      rootDescription:CreateDivider()
+    end
+    if rootDescription and type(rootDescription.CreateTitle) == "function" then
+      local loc = AzerothCompanion.Localization.Strings or {} -- 本地化文案
+      rootDescription:CreateTitle(loc.EJ_DROP_FILTER_TYPE_LABEL or "掉落类型")
+    end
+    createDetailLootTypeRadio(rootDescription, "mount")
+    createDetailLootTypeRadio(rootDescription, "pet")
+    createDetailLootTypeRadio(rootDescription, "recipe")
+    createDetailLootTypeRadio(rootDescription, "housing_decoration")
+  end)
 end
 
 local function pickFallbackLockout(lockoutList)
@@ -601,12 +963,66 @@ function DetailEnhancer:updateLockoutLabel()
   end
 end
 
-function DetailEnhancer:refresh()
-  self:ensureLockoutLabel()
-  self:updateVisibility()
-  self:updateLockoutLabel()
+--- 按详情页临时掉落类型过滤当前战利品列表。
+function DetailEnhancer:applyDetailLootTypeFilter()
+  if detailLootFilterType == DETAIL_LOOT_FILTER_ALL or not isModuleEnabled() or not isEncounterDetailVisible() then
+    return
+  end
+  local journalInstanceID = getCurrentDetailJournalInstanceID() -- 当前详情页副本 ID
+  if type(journalInstanceID) ~= "number" then
+    return
+  end
+  local dataProvider = getDetailLootDataProvider() -- 战利品数据源
+  if not dataProvider or type(dataProvider.Remove) ~= "function" then
+    return
+  end
+  local dropSet = nil -- 当前类型掉落集合
+  if AzerothCompanion.API.EncounterJournal and type(AzerothCompanion.API.EncounterJournal.GetDropSetForInstance) == "function" then
+    dropSet = AzerothCompanion.API.EncounterJournal.GetDropSetForInstance(journalInstanceID, detailLootFilterType)
+  end
+
+  local keepMap = {} -- 需要保留的数据行
+  local headerKeepMap = {} -- 需要保留的分组标题
+  local pendingHeader = nil -- 等待确认是否保留的标题行
+  local allRows = {} -- 遍历到的全部行
+  pcall(function()
+    dataProvider:ForEach(function(elementData)
+      allRows[#allRows + 1] = elementData
+      if type(elementData) == "table" and elementData.header == true then
+        pendingHeader = elementData
+        return
+      end
+      local itemID = getDetailLootItemID(elementData) -- 当前战利品 itemID
+      if type(dropSet) == "table" and itemID and dropSet[itemID] == true then
+        keepMap[elementData] = true
+        if pendingHeader then
+          headerKeepMap[pendingHeader] = true
+        end
+      end
+    end)
+  end)
+
+  for _, elementData in ipairs(allRows) do
+    local shouldRemove = true -- 当前行是否移除
+    if type(elementData) == "table" and elementData.header == true then
+      shouldRemove = headerKeepMap[elementData] ~= true
+    else
+      shouldRemove = keepMap[elementData] ~= true
+    end
+    if shouldRemove then
+      pcall(function() dataProvider:Remove(elementData) end)
+    end
+  end
 end
 
-Internal.MountFilter = MountFilter
+function DetailEnhancer:refresh()
+  self:ensureLockoutLabel()
+  setupDetailLootSlotFilterDropdown()
+  self:updateVisibility()
+  self:updateLockoutLabel()
+  self:applyDetailLootTypeFilter()
+end
+
+Internal.DropFilter = DropFilter
 Internal.ListNavigationPin = ListNavigationPin
 Internal.DetailEnhancer = DetailEnhancer

@@ -11,7 +11,7 @@ local CreateFrame = Internal.CreateFrame
 local microTooltipAppendState = Internal.microTooltipAppendState
 local scrollBoxCache = Internal.scrollBoxCache
 
-local MountFilter = Internal.MountFilter
+local DropFilter = Internal.DropFilter
 local DetailEnhancer = Internal.DetailEnhancer
 local LockoutOverlay = Internal.LockoutOverlay
 local ListNavigationPin = Internal.ListNavigationPin
@@ -29,14 +29,14 @@ local function getEncounterInfoFrame()
 end
 
 local function refreshAll()
-  MountFilter = Internal.MountFilter
+  DropFilter = Internal.DropFilter
   DetailEnhancer = Internal.DetailEnhancer
   LockoutOverlay = Internal.LockoutOverlay
   ListNavigationPin = Internal.ListNavigationPin
-  MountFilter:createUI()
+  DropFilter:createUI()
   DetailEnhancer:refresh()
-  MountFilter:updateVisibility()
-  MountFilter:applyFilter()
+  DropFilter:updateVisibility()
+  DropFilter:applyFilter()
   ListNavigationPin:updateFrames()
   LockoutOverlay:updateFrames()
   LockoutOverlay:hookTooltips()
@@ -245,13 +245,17 @@ local function hookDetailInfoOnShow()
 end
 
 local function initHooks()
+  if AzerothCompanion.API and AzerothCompanion.API.Tooltip and type(AzerothCompanion.API.Tooltip.InstallEncounterJournalTooltipHook) == "function" then
+    AzerothCompanion.API.Tooltip.InstallEncounterJournalTooltipHook()
+  end
+
   -- Hook 1: 列表刷新
   if not hookState.listInstances and hooksecurefunc and type(_G.EncounterJournal_ListInstances) == "function" then
     local hookSuccess = pcall(function() -- 列表刷新 hook 安装结果
       hooksecurefunc("EncounterJournal_ListInstances", function()
         scrollBoxCache.ref = nil
         scrollBoxCache.lastUpdate = 0
-        MountFilter:createUI()
+        DropFilter:createUI()
         RefreshScheduler:schedule("list_refresh")
       end)
     end)
@@ -260,7 +264,7 @@ local function initHooks()
     end
   end
 
-  -- Hook 1.5: 详情页战利品更新（用于“仅坐骑”筛选）
+  -- Hook 1.5: 详情页战利品更新（用于掉落筛选相关刷新）
   if not hookState.lootUpdate and hooksecurefunc and type(_G.EncounterJournal_LootUpdate) == "function" then
     local hookSuccess = pcall(function() -- 战利品刷新 hook 安装结果
       hooksecurefunc("EncounterJournal_LootUpdate", function()
@@ -333,8 +337,8 @@ local function initHooks()
         hookDetailInfoOnShow()
         -- 页签顺序/显隐在 OnShow 当帧先应用，避免首帧出现默认顺序闪烁。
         if isModuleEnabled() then
-          MountFilter:createUI()
-          MountFilter:updateVisibility()
+          DropFilter:createUI()
+          DropFilter:updateVisibility()
         end
         RefreshScheduler:schedule("frame_show")
       end)
@@ -475,7 +479,7 @@ AzerothCompanion.RegisterModule({
     initHooks()
     refreshAfterHookInit()
     DetailEnhancer:refresh()
-    MountFilter:syncCheckbox()
+    DropFilter:syncDropdown()
     ListNavigationPin:updateFrames()
     if type(_G.EncounterJournal_ListInstances) == "function" then
       pcall(_G.EncounterJournal_ListInstances)
@@ -496,7 +500,7 @@ AzerothCompanion.RegisterModule({
       LockoutOverlay:clearAllFrames()
       ListNavigationPin:clearAllFrames()
     end
-    MountFilter:syncCheckbox()
+    DropFilter:syncDropdown()
     if type(_G.EncounterJournal_ListInstances) == "function" then
       pcall(_G.EncounterJournal_ListInstances)
     end
@@ -506,7 +510,7 @@ AzerothCompanion.RegisterModule({
     Internal.ResetEncounterJournalSettings()
     ListNavigationPin:clearInteractionState()
     DetailEnhancer:refresh()
-    MountFilter:syncCheckbox()
+    DropFilter:syncDropdown()
     ListNavigationPin:updateFrames()
     if type(_G.EncounterJournal_ListInstances) == "function" then
       pcall(_G.EncounterJournal_ListInstances)
@@ -515,6 +519,59 @@ AzerothCompanion.RegisterModule({
 
   RegisterSettings = function(box)
     local localeTable = AzerothCompanion.Localization.Strings or {} -- 本地化文案
+    box:AddMultiSelectRow({
+      label = localeTable.EJ_DROP_FILTER_TYPE_LABEL or "掉落类型",
+      description = localeTable.EJ_DROP_FILTER_TYPE_HINT or "",
+      options = {
+        { value = "mount", label = localeTable.EJ_DROP_FILTER_TYPE_MOUNT or "mount" },
+        { value = "pet", label = localeTable.EJ_DROP_FILTER_TYPE_PET or "pet" },
+        { value = "recipe", label = localeTable.EJ_DROP_FILTER_TYPE_RECIPE or "recipe" },
+        { value = "housing_decoration", label = localeTable.EJ_DROP_FILTER_TYPE_HOUSING_DECORATION or "housing decoration" },
+      },
+      isSelected = function(value)
+        return Internal.IsDropFilterTypeSelected(value)
+      end,
+      setSelected = function(value, isSelected)
+        Internal.SetDropFilterTypeSelected(value, isSelected == true)
+      end,
+      afterChange = function()
+        DropFilter:syncDropdown()
+        refreshAfterHookInit()
+      end,
+    })
+    box:AddMultiSelectRow({
+      label = localeTable.EJ_DROP_FILTER_OWNERSHIP_LABEL or "获取状态",
+      description = localeTable.EJ_DROP_FILTER_OWNERSHIP_HINT or "",
+      options = {
+        { value = "collected", label = localeTable.EJ_DROP_FILTER_OWNERSHIP_COLLECTED or "collected" },
+        { value = "uncollected", label = localeTable.EJ_DROP_FILTER_OWNERSHIP_UNCOLLECTED or "uncollected" },
+      },
+      isSelected = function(value)
+        local ownership = Internal.GetDropFilterOwnership() -- 当前获取状态
+        return ownership == "all" or ownership == value
+      end,
+      setSelected = function(value, isSelected)
+        local ownership = Internal.GetDropFilterOwnership() -- 当前获取状态
+        local selectedCollected = ownership == "all" or ownership == "collected" -- 已获取勾选状态
+        local selectedUncollected = ownership == "all" or ownership == "uncollected" -- 未获取勾选状态
+        if value == "collected" then
+          selectedCollected = isSelected == true
+        elseif value == "uncollected" then
+          selectedUncollected = isSelected == true
+        end
+        if selectedCollected == true and selectedUncollected ~= true then
+          Internal.SetDropFilterOwnership("collected")
+        elseif selectedUncollected == true and selectedCollected ~= true then
+          Internal.SetDropFilterOwnership("uncollected")
+        else
+          Internal.SetDropFilterOwnership("all")
+        end
+      end,
+      afterChange = function()
+        DropFilter:syncDropdown()
+        refreshAfterHookInit()
+      end,
+    })
     box:AddToggleRow({
       label = localeTable.EJ_LIST_PIN_ALWAYS_VISIBLE_LABEL or "定位图标常驻显示",
       getValue = function()

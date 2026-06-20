@@ -42,6 +42,8 @@ local SettingId = {
   ENCOUNTER_JOURNAL_DEBUG = 6002,
   ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED = 6003,
   ENCOUNTER_JOURNAL_LIST_PIN_ALWAYS_VISIBLE = 6004,
+  ENCOUNTER_JOURNAL_DROP_FILTER_TYPE = 6005,
+  ENCOUNTER_JOURNAL_DROP_FILTER_OWNERSHIP = 6006,
 
   NAVIGATION_ENABLED = 7001,
   NAVIGATION_DEBUG = 7002,
@@ -210,6 +212,42 @@ local function normalizeFlyoutSlotIds(rawValue)
   return normalizedList
 end
 
+--- 归一冒险手册掉落类型勾选集合；兼容上一版单值存档。
+---@param rawValue any 原始掉落类型设置
+---@return table|nil normalizedMap 归一后的类型勾选表
+---@return boolean isValid 是否有效
+local function normalizeEncounterJournalDropFilterTypes(rawValue)
+  local allowedTypes = { mount = true, pet = true, recipe = true, housing_decoration = true } -- 支持的掉落类型
+  local normalizedMap = {} -- 归一后的勾选集合
+  if rawValue == "all" then
+    return normalizedMap, true
+  end
+  if type(rawValue) == "string" then
+    if allowedTypes[rawValue] == true then
+      normalizedMap[rawValue] = true
+      return normalizedMap, true
+    end
+    return nil, false
+  end
+  if type(rawValue) ~= "table" then
+    return nil, false
+  end
+  if isArrayTable(rawValue) then
+    for _, dropType in ipairs(rawValue) do
+      if allowedTypes[dropType] == true then
+        normalizedMap[dropType] = true
+      end
+    end
+    return normalizedMap, true
+  end
+  for dropType, isSelected in pairs(rawValue) do
+    if allowedTypes[dropType] == true and isSelected == true then
+      normalizedMap[dropType] = true
+    end
+  end
+  return normalizedMap, true
+end
+
 --- 归一世界地图尺寸字段；nil 表示不保存该尺寸。
 ---@param rawValue any 原始尺寸值
 ---@return number|nil dimensionValue 合法尺寸值
@@ -286,6 +324,8 @@ local settingDefinitions = {
   [SettingId.ENCOUNTER_JOURNAL_DEBUG] = { key = "encounter_journal.debug", scopes = accountOnly, default = false, valueType = "boolean" },
   [SettingId.ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED] = { key = "encounter_journal.mountFilterEnabled", scopes = accountOnly, default = true, valueType = "boolean" },
   [SettingId.ENCOUNTER_JOURNAL_LIST_PIN_ALWAYS_VISIBLE] = { key = "encounter_journal.listPinAlwaysVisible", scopes = accountOnly, default = false, valueType = "boolean" },
+  [SettingId.ENCOUNTER_JOURNAL_DROP_FILTER_TYPE] = { key = "encounter_journal.dropFilterType", scopes = accountOnly, default = { mount = true }, valueType = "table", normalize = normalizeEncounterJournalDropFilterTypes },
+  [SettingId.ENCOUNTER_JOURNAL_DROP_FILTER_OWNERSHIP] = { key = "encounter_journal.dropFilterOwnership", scopes = accountOnly, default = "all", valueType = "string", allowedValues = { all = true, collected = true, uncollected = true } },
 
   [SettingId.NAVIGATION_ENABLED] = { key = "navigation.enabled", scopes = accountOnly, default = true, valueType = "boolean" },
   [SettingId.NAVIGATION_DEBUG] = { key = "navigation.debug", scopes = accountOnly, default = false, valueType = "boolean" },
@@ -465,6 +505,14 @@ local function normalizeStoreValues(scope)
   local storeTable = ensureStore(scope) -- 根存档
   if not storeTable then
     return
+  end
+  if scope == ACCOUNT_SCOPE and storeTable.values[SettingId.ENCOUNTER_JOURNAL_DROP_FILTER_TYPE] == nil then
+    local legacyMountOnly = storeTable.values[SettingId.ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED] -- 已发布旧坐骑筛选布尔值
+    if legacyMountOnly == false then
+      storeTable.values[SettingId.ENCOUNTER_JOURNAL_DROP_FILTER_TYPE] = {}
+    elseif legacyMountOnly == true then
+      storeTable.values[SettingId.ENCOUNTER_JOURNAL_DROP_FILTER_TYPE] = { mount = true }
+    end
   end
   for settingId, storedValue in pairs(storeTable.values) do
     local numericId = type(settingId) == "number" and settingId or tonumber(settingId) -- 数字设置 ID

@@ -667,6 +667,8 @@ local function buildDiagnosticBackgroundText(segmentInfo)
 
   local sourceText = trimText(segmentInfo.source or segmentInfo.Source) -- 来源类型
   local sourceIDText = trimText(segmentInfo.sourceID or segmentInfo.SourceID) -- 来源主键
+  local routeEdgeIndexText = trimText(segmentInfo.routeEdgeIndex or segmentInfo.RouteEdgeIndex) -- 统一路线边表下标
+  local edgeIDText = trimText(segmentInfo.edgeID or segmentInfo.EdgeID or segmentInfo.id or segmentInfo.ID) -- 路线边 ID
   local originalModeText = trimText(segmentInfo.originalMode or segmentInfo.OriginalMode) -- 原始路线方式
   local manualTravelText = (segmentInfo.manualTravel == true or segmentInfo.ManualTravel == true) and "true" or "" -- 是否手动飞行展示
   local abilityTemplateIDText = trimText(segmentInfo.abilityTemplateID or segmentInfo.AbilityTemplateID) -- 能力模板 ID
@@ -674,10 +676,20 @@ local function buildDiagnosticBackgroundText(segmentInfo)
   local classFileText = trimText(segmentInfo.classFile or segmentInfo.ClassFile) -- 职业限制
   local factionRequirementText = trimText(segmentInfo.factionRequirement or segmentInfo.FactionRequirement) -- 阵营限制
   local playerConditionIDText = trimText(segmentInfo.playerConditionID or segmentInfo.PlayerConditionID) -- 玩家条件 ID
+  local fromNodeIDText = trimText(segmentInfo.fromNodeID or segmentInfo.FromNodeID or segmentInfo.from or segmentInfo.From) -- 起点运行时节点 ID
+  local toNodeIDText = trimText(segmentInfo.toNodeID or segmentInfo.ToNodeID or segmentInfo.to or segmentInfo.To) -- 终点运行时节点 ID
+  local fromSourceText = trimText(segmentInfo.fromSource or segmentInfo.FromSource) -- 起点来源类型
+  local fromSourceIDText = trimText(segmentInfo.fromSourceID or segmentInfo.FromSourceID) -- 起点来源侧 ID
+  local toSourceText = trimText(segmentInfo.toSource or segmentInfo.ToSource) -- 终点来源类型
+  local toSourceIDText = trimText(segmentInfo.toSourceID or segmentInfo.ToSourceID) -- 终点来源侧 ID
+  local fromUiMapIDText = trimText(segmentInfo.fromUiMapID or segmentInfo.FromUiMapID) -- 起点地图 ID
+  local toUiMapIDText = trimText(segmentInfo.toUiMapID or segmentInfo.ToUiMapID) -- 终点地图 ID
   local fromTaxiNodeIDText = trimText(segmentInfo.fromTaxiNodeID or segmentInfo.FromTaxiNodeID) -- 起点飞行点 ID
   local toTaxiNodeIDText = trimText(segmentInfo.toTaxiNodeID or segmentInfo.ToTaxiNodeID) -- 终点飞行点 ID
   local hasBackground = sourceText ~= "" -- 是否存在任一背景字段
     or sourceIDText ~= ""
+    or routeEdgeIndexText ~= ""
+    or edgeIDText ~= ""
     or originalModeText ~= ""
     or manualTravelText ~= ""
     or abilityTemplateIDText ~= ""
@@ -685,6 +697,14 @@ local function buildDiagnosticBackgroundText(segmentInfo)
     or classFileText ~= ""
     or factionRequirementText ~= ""
     or playerConditionIDText ~= ""
+    or fromNodeIDText ~= ""
+    or toNodeIDText ~= ""
+    or fromSourceText ~= ""
+    or fromSourceIDText ~= ""
+    or toSourceText ~= ""
+    or toSourceIDText ~= ""
+    or fromUiMapIDText ~= ""
+    or toUiMapIDText ~= ""
     or fromTaxiNodeIDText ~= ""
     or toTaxiNodeIDText ~= ""
   local textList = {} -- 背景字段文本
@@ -695,6 +715,8 @@ local function buildDiagnosticBackgroundText(segmentInfo)
 
   appendDiagnosticBackgroundField(textList, "source", sourceText)
   appendDiagnosticBackgroundField(textList, "sourceID", sourceIDText)
+  appendDiagnosticBackgroundField(textList, "routeEdgeIndex", routeEdgeIndexText)
+  appendDiagnosticBackgroundField(textList, "edgeID", edgeIDText)
   appendDiagnosticBackgroundField(textList, "originalMode", originalModeText)
   appendDiagnosticBackgroundField(textList, "manualTravel", manualTravelText)
   appendDiagnosticBackgroundField(textList, "abilityTemplateID", abilityTemplateIDText)
@@ -702,6 +724,14 @@ local function buildDiagnosticBackgroundText(segmentInfo)
   appendDiagnosticBackgroundField(textList, "classFile", classFileText)
   appendDiagnosticBackgroundField(textList, "playerConditionID", playerConditionIDText)
   appendDiagnosticBackgroundField(textList, "factionRequirement", factionRequirementText, true)
+  appendDiagnosticBackgroundField(textList, "fromNodeID", fromNodeIDText)
+  appendDiagnosticBackgroundField(textList, "toNodeID", toNodeIDText)
+  appendDiagnosticBackgroundField(textList, "fromSource", fromSourceText)
+  appendDiagnosticBackgroundField(textList, "fromSourceID", fromSourceIDText)
+  appendDiagnosticBackgroundField(textList, "toSource", toSourceText)
+  appendDiagnosticBackgroundField(textList, "toSourceID", toSourceIDText)
+  appendDiagnosticBackgroundField(textList, "fromUiMapID", fromUiMapIDText)
+  appendDiagnosticBackgroundField(textList, "toUiMapID", toUiMapIDText)
   appendDiagnosticBackgroundField(textList, "fromTaxiNodeID", fromTaxiNodeIDText)
   appendDiagnosticBackgroundField(textList, "toTaxiNodeID", toTaxiNodeIDText)
   return table.concat(textList, " | ")

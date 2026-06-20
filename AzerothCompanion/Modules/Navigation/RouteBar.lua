@@ -1051,6 +1051,8 @@ local function copyDiagnosticSegmentBackgroundFields(diagnosticSegment, segment)
 
   diagnosticSegment.source = segment.source or segment.Source
   diagnosticSegment.sourceID = segment.sourceID or segment.SourceID
+  diagnosticSegment.routeEdgeIndex = segment.routeEdgeIndex or segment.RouteEdgeIndex
+  diagnosticSegment.edgeID = segment.edgeID or segment.EdgeID or segment.id or segment.ID
   diagnosticSegment.originalMode = segment.originalMode or segment.OriginalMode
   diagnosticSegment.manualTravel = segment.manualTravel == true or segment.ManualTravel == true
   diagnosticSegment.abilityTemplateID = segment.abilityTemplateID or segment.AbilityTemplateID
@@ -1058,6 +1060,14 @@ local function copyDiagnosticSegmentBackgroundFields(diagnosticSegment, segment)
   diagnosticSegment.classFile = segment.classFile or segment.ClassFile
   diagnosticSegment.factionRequirement = segment.factionRequirement or segment.FactionRequirement
   diagnosticSegment.playerConditionID = segment.playerConditionID or segment.PlayerConditionID
+  diagnosticSegment.fromNodeID = segment.fromNodeID or segment.FromNodeID or segment.from or segment.From
+  diagnosticSegment.toNodeID = segment.toNodeID or segment.ToNodeID or segment.to or segment.To
+  diagnosticSegment.fromSource = segment.fromSource or segment.FromSource
+  diagnosticSegment.fromSourceID = segment.fromSourceID or segment.FromSourceID
+  diagnosticSegment.toSource = segment.toSource or segment.ToSource
+  diagnosticSegment.toSourceID = segment.toSourceID or segment.ToSourceID
+  diagnosticSegment.fromUiMapID = segment.fromUiMapID or segment.FromUiMapID
+  diagnosticSegment.toUiMapID = segment.toUiMapID or segment.ToUiMapID
   diagnosticSegment.fromTaxiNodeID = segment.fromTaxiNodeID or segment.FromTaxiNodeID
   diagnosticSegment.toTaxiNodeID = segment.toTaxiNodeID or segment.ToTaxiNodeID
 end

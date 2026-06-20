@@ -4,7 +4,7 @@
     1. 锁定查询：GetAllLockoutsForInstance - 查询副本所有难度的锁定信息
     2. 首领查询：GetKilledBosses - 查询副本已击杀的首领列表
     3. UI 状态查询：IsRaidOrDungeonInstanceListTab - 检查当前是否在副本列表标签页
-    4. 坐骑查询：HasMountDrops - 检查副本是否掉落坐骑
+    4. 掉落筛选：HasMatchingDropsForInstance - 按类型与获取状态检查副本掉落
 ]]
 
 AzerothCompanion.API.EncounterJournal = AzerothCompanion.API.EncounterJournal or {}
@@ -440,40 +440,139 @@ local function createEntrancePosition(x, y)
   }
 end
 
+--- 读取入口候选的结构化目标字段。
+---@param entranceDef table|nil 入口或候选记录
+---@return number|nil targetUiMapID 外部目标地图 ID
+---@return number|nil targetX 外部目标 X 坐标
+---@return number|nil targetY 外部目标 Y 坐标
+local function readEntranceTarget(entranceDef)
+  if type(entranceDef) ~= "table" then
+    return nil, nil, nil
+  end
+
+  local targetUiMapID = tonumber(entranceDef.TargetUiMapID or entranceDef.targetUiMapID) -- 外部目标地图
+  local targetX = tonumber(entranceDef.TargetX or entranceDef.targetX) -- 外部目标 X
+  local targetY = tonumber(entranceDef.TargetY or entranceDef.targetY) -- 外部目标 Y
+  if targetUiMapID and targetUiMapID > 0 and targetX and targetY and targetX >= 0 and targetX <= 1 and targetY >= 0 and targetY <= 1 then
+    return targetUiMapID, targetX, targetY
+  end
+
+  return nil, nil, nil
+end
+
+--- 判断路线边是否显式经过指定 UiMapID。
+---@param traversedUiMapIDs table|nil 经过地图列表
+---@param targetUiMapID number 目标地图 ID
+---@return boolean
+local function routeEdgeTraversesUiMapID(traversedUiMapIDs, targetUiMapID)
+  if type(traversedUiMapIDs) ~= "table" then
+    return false
+  end
+
+  for _, traversedUiMapID in pairs(traversedUiMapIDs) do
+    if tonumber(traversedUiMapID) == targetUiMapID then
+      return true
+    end
+  end
+
+  return false
+end
+
+--- 判断指定 UiMapID 是否已经出现在统一运行时路线边中。
+---@param uiMapID number|nil 地图 ID
+---@return boolean
+local function hasNavigationRouteEdgesForUiMapID(uiMapID)
+  local targetUiMapID = tonumber(uiMapID) -- 待检查地图 ID
+  if not targetUiMapID or targetUiMapID <= 0 then
+    return false
+  end
+
+  local routeEdgeData = AzerothCompanion.Data and AzerothCompanion.Data.NavigationRouteEdges -- 统一运行时路线边
+  local edgeList = type(routeEdgeData) == "table" and routeEdgeData.edges or nil -- 路线边列表
+  if type(edgeList) ~= "table" then
+    return false
+  end
+
+  for _, edgeDef in pairs(edgeList) do
+    if type(edgeDef) == "table" then
+      local fromUiMapID = tonumber(edgeDef.FromUiMapID or edgeDef.fromUiMapID) -- 边起点地图
+      local toUiMapID = tonumber(edgeDef.ToUiMapID or edgeDef.toUiMapID) -- 边终点地图
+      local traversedUiMapIDs = edgeDef.TraversedUiMapIDs or edgeDef.traversedUiMapIDs -- 边经过地图
+      if fromUiMapID == targetUiMapID or toUiMapID == targetUiMapID or routeEdgeTraversesUiMapID(traversedUiMapIDs, targetUiMapID) then
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
+--- 从入口候选中优先选择可参与导航路线的目标。
+---@param candidateList table|nil 候选入口列表
+---@param fallbackEntrance table|nil 首选入口记录
+---@return table|nil entranceDef 被选中的入口或候选记录
+local function selectRouteableEntranceCandidate(candidateList, fallbackEntrance)
+  local firstValidCandidate = nil -- 第一个结构化字段完整的候选
+  if type(candidateList) == "table" then
+    for _, candidateDef in ipairs(candidateList) do
+      local targetUiMapID = readEntranceTarget(candidateDef) -- 候选目标地图
+      if targetUiMapID then
+        if not firstValidCandidate then
+          firstValidCandidate = candidateDef
+        end
+        if hasNavigationRouteEdgesForUiMapID(targetUiMapID) then
+          return candidateDef
+        end
+      end
+    end
+  end
+
+  if firstValidCandidate then
+    return firstValidCandidate
+  end
+
+  local fallbackUiMapID = readEntranceTarget(fallbackEntrance) -- 首选入口目标地图
+  if fallbackUiMapID then
+    return fallbackEntrance
+  end
+
+  return nil
+end
+
 --- 从规范化运行时入口导出表读取入口位置。
 ---@param journalInstanceID number 冒险指南副本 ID
----@param options table|nil 保留参数；当前运行时入口查找不再使用候选地图扫描
+---@param options table|nil 保留参数；当前运行时入口查找不再使用调用方候选地图扫描
 ---@return table|nil entrance 入口信息，含 uiMapID / position / areaPoiID / name / journalInstanceID
 function AzerothCompanion.API.EncounterJournal.FindDungeonEntranceForJournalInstance(journalInstanceID, options)
   if type(journalInstanceID) ~= "number" or journalInstanceID <= 0 then
     return nil
   end
 
-  local _ = options -- 预留给历史调用方，当前不再使用运行时候选地图兜底
+  local _ = options -- 预留给历史调用方，当前不再使用调用方候选地图兜底
 
   local entranceData = AzerothCompanion.Data and AzerothCompanion.Data.NavigationInstanceEntrances -- 导出的副本入口数据
   local entrancesByJournalInstanceID = type(entranceData) == "table" and entranceData.entrancesByJournalInstanceID or nil -- 按副本 ID 索引
   local exportedEntrance = type(entrancesByJournalInstanceID) == "table" and entrancesByJournalInstanceID[journalInstanceID] or nil -- 命中的入口记录
-  if type(exportedEntrance) == "table" then
-    local targetUiMapID = tonumber(exportedEntrance.TargetUiMapID) -- 外部目标地图
-    local targetX = tonumber(exportedEntrance.TargetX) -- 外部目标 X
-    local targetY = tonumber(exportedEntrance.TargetY) -- 外部目标 Y
-    if targetUiMapID and targetUiMapID > 0 and targetX and targetY and targetX >= 0 and targetX <= 1 and targetY >= 0 and targetY <= 1 then
-      return {
-        source = "exported",
-        uiMapID = targetUiMapID,
-        position = createEntrancePosition(targetX, targetY),
-        entranceID = exportedEntrance.EntranceID,
-        areaPoiID = exportedEntrance.AreaPoiID,
-        name = exportedEntrance.Name_lang or exportedEntrance.AreaPoiName_lang,
-        journalInstanceID = exportedEntrance.JournalInstanceID or journalInstanceID,
-        instanceMapID = exportedEntrance.InstanceMapID,
-        worldMapID = exportedEntrance.WorldMapID,
-        worldX = exportedEntrance.WorldX,
-        worldY = exportedEntrance.WorldY,
-        worldZ = exportedEntrance.WorldZ,
-      }
-    end
+  local candidatesByJournalInstanceID = type(entranceData) == "table" and entranceData.candidatesByJournalInstanceID or nil -- 按副本 ID 索引的候选列表
+  local candidateList = type(candidatesByJournalInstanceID) == "table" and candidatesByJournalInstanceID[journalInstanceID] or nil -- 命中的候选列表
+  local selectedEntrance = selectRouteableEntranceCandidate(candidateList, exportedEntrance) -- 可路由优先的入口目标
+  local targetUiMapID, targetX, targetY = readEntranceTarget(selectedEntrance) -- 最终外部目标
+  if targetUiMapID and targetX and targetY then
+    local metadataEntrance = type(exportedEntrance) == "table" and exportedEntrance or selectedEntrance -- 用于保留副本元数据的记录
+    return {
+      source = "exported",
+      uiMapID = targetUiMapID,
+      position = createEntrancePosition(targetX, targetY),
+      entranceID = selectedEntrance.EntranceID or metadataEntrance.EntranceID,
+      areaPoiID = metadataEntrance.AreaPoiID or selectedEntrance.AreaPoiID,
+      name = metadataEntrance.Name_lang or metadataEntrance.AreaPoiName_lang or selectedEntrance.Name_lang or selectedEntrance.AreaPoiName_lang,
+      journalInstanceID = metadataEntrance.JournalInstanceID or selectedEntrance.JournalInstanceID or journalInstanceID,
+      instanceMapID = metadataEntrance.InstanceMapID or selectedEntrance.InstanceMapID,
+      worldMapID = metadataEntrance.WorldMapID or selectedEntrance.WorldMapID,
+      worldX = metadataEntrance.WorldX or selectedEntrance.WorldX,
+      worldY = metadataEntrance.WorldY or selectedEntrance.WorldY,
+      worldZ = metadataEntrance.WorldZ or selectedEntrance.WorldZ,
+    }
   end
 
   return nil
@@ -615,39 +714,315 @@ function AzerothCompanion.API.EncounterJournal.IsRaidOrDungeonInstanceListTab()
 end
 
 -- ============================================================================
--- 坐骑查询 API
+-- 掉落筛选查询 API
 -- ============================================================================
 
-local mountItemSetCache = {}
+local dropItemSetCache = {} -- 按掉落类型和副本 ID 缓存的 itemID 集合
+local DROP_DATA_TABLES = { -- 掉落类型到导出数据表字段的映射
+  mount = "MountDrops",
+  pet = "PetDrops",
+  recipe = "RecipeDrops",
+  housing_decoration = "HousingDecorationDrops",
+}
 
---- 获取副本坐骑掉落 itemID 集合（集合键为 itemID，值为 true）。
+local DROP_TYPE_ORDER = { "mount", "pet", "recipe", "housing_decoration" } -- all 类型合并时的子类型遍历顺序
+
+--- 归一掉落类型。
+---@param dropType string|nil 掉落类型
+---@return string normalizedType 归一后的类型
+local function normalizeDropType(dropType)
+  if dropType == "all" or dropType == "mount" or dropType == "pet" or dropType == "recipe" or dropType == "housing_decoration" then
+    return dropType
+  end
+  return "mount"
+end
+
+--- 归一化掉落类型筛选集合。
+---@param dropFilter string|table|nil 掉落类型或类型勾选集合
+---@return table typeList 需要检查的掉落类型序列
+---@return boolean typeFilterActive 是否存在类型过滤
+local function normalizeDropTypeSelection(dropFilter)
+  if type(dropFilter) == "table" then
+    local typeList = {} -- 归一后的类型序列
+    for _, dropType in ipairs(DROP_TYPE_ORDER) do
+      if dropFilter[dropType] == true then
+        typeList[#typeList + 1] = dropType
+      end
+    end
+    if #typeList > 0 then
+      return typeList, true
+    end
+    return DROP_TYPE_ORDER, false
+  end
+  local normalizedType = normalizeDropType(dropFilter) -- 归一后的单值类型
+  if normalizedType == "all" then
+    return DROP_TYPE_ORDER, false
+  end
+  return { normalizedType }, true
+end
+
+--- 归一获取状态筛选。
+---@param ownership string|nil 获取状态
+---@return string normalizedOwnership 归一后的状态
+local function normalizeOwnership(ownership)
+  if ownership == "all" or ownership == "collected" or ownership == "uncollected" then
+    return ownership
+  end
+  return "all"
+end
+
+--- 检查布尔结果是否与获取状态筛选匹配。
+---@param isCollected boolean|nil 是否已收集；nil 表示未知
+---@param ownership string 获取状态筛选
+---@return boolean
+local function doesOwnershipMatch(isCollected, ownership)
+  if ownership == "all" then
+    return true
+  end
+  if isCollected == nil then
+    -- 缓存或职业 API 不可用时，未知状态按“未确认已获取”处理，避免未获取筛选误清空列表。
+    return ownership == "uncollected"
+  end
+  if ownership == "collected" then
+    return isCollected == true
+  end
+  return isCollected == false
+end
+
+--- 安全读取坐骑物品是否已收集。
+---@param itemID number 物品 ID
+---@return boolean|nil isCollected 是否已收集
+local function getMountCollectedState(itemID)
+  if not C_MountJournal or type(C_MountJournal.GetMountFromItem) ~= "function" or type(C_MountJournal.GetMountInfoByID) ~= "function" then
+    return nil
+  end
+  local mountSuccess, mountID = pcall(C_MountJournal.GetMountFromItem, itemID) -- 坐骑物品反查结果
+  if not mountSuccess or type(mountID) ~= "number" then
+    return nil
+  end
+  local infoResults = { pcall(C_MountJournal.GetMountInfoByID, mountID) } -- GetMountInfoByID 返回字段
+  if infoResults[1] ~= true then
+    return nil
+  end
+  if type(infoResults[12]) == "boolean" then
+    return infoResults[12]
+  end
+  return nil
+end
+
+--- 安全读取宠物物品是否已收集。
+---@param itemID number 物品 ID
+---@return boolean|nil isCollected 是否已收集
+local function getPetCollectedState(itemID)
+  if not C_PetJournal or type(C_PetJournal.GetPetInfoByItemID) ~= "function" or type(C_PetJournal.GetNumCollectedInfo) ~= "function" then
+    return nil
+  end
+  -- GetPetInfoByItemID 的 speciesID 是第 13 个返回值；pcall 成功标记占第 1 位。
+  local infoResults = { pcall(C_PetJournal.GetPetInfoByItemID, itemID) } -- 宠物物品查询返回字段
+  if infoResults[1] ~= true or infoResults[14] == nil then
+    return nil
+  end
+  local speciesID = infoResults[14] -- 宠物 speciesID
+  local countSuccess, collectedCount = pcall(C_PetJournal.GetNumCollectedInfo, speciesID) -- 宠物已收集数量查询结果
+  if not countSuccess or type(collectedCount) ~= "number" then
+    return nil
+  end
+  return collectedCount > 0
+end
+
+--- 安全读取图纸物品是否已学会。
+---@param itemID number 物品 ID
+---@return boolean|nil isCollected 是否已学会
+local function getRecipeCollectedState(itemID)
+  local spellID = nil -- 图纸学习法术 ID
+  if C_Item and type(C_Item.GetItemSpell) == "function" then
+    local spellSuccess, _, itemSpellID = pcall(C_Item.GetItemSpell, itemID) -- C_Item 图纸法术查询结果
+    if spellSuccess and type(itemSpellID) == "number" then
+      spellID = itemSpellID
+    end
+  end
+  if not spellID and type(GetItemSpell) == "function" then
+    local spellSuccess, _, itemSpellID = pcall(GetItemSpell, itemID) -- 旧全局图纸法术查询结果
+    if spellSuccess and type(itemSpellID) == "number" then
+      spellID = itemSpellID
+    end
+  end
+  if type(spellID) ~= "number" then
+    return nil
+  end
+  if C_TradeSkillUI and type(C_TradeSkillUI.GetRecipeInfo) == "function" then
+    local recipeSuccess, recipeInfo = pcall(C_TradeSkillUI.GetRecipeInfo, spellID) -- 专业配方状态查询结果
+    if recipeSuccess and type(recipeInfo) == "table" and type(recipeInfo.learned) == "boolean" then
+      return recipeInfo.learned
+    end
+  end
+  if C_SpellBook and type(C_SpellBook.IsSpellKnown) == "function" then
+    local knownSuccess, isKnown = pcall(C_SpellBook.IsSpellKnown, spellID) -- SpellBook 已学状态查询结果
+    if knownSuccess then
+      return isKnown == true
+    end
+  end
+  if type(IsPlayerSpell) == "function" then
+    local knownSuccess, isKnown = pcall(IsPlayerSpell, spellID) -- 旧全局已学法术查询结果
+    if knownSuccess then
+      return isKnown == true
+    end
+  end
+  return nil
+end
+
+--- 安全读取住宅装饰物品是否已获取。
+---@param itemID number 物品 ID
+---@return boolean|nil isCollected 是否已获取
+local function getHousingDecorationCollectedState(itemID)
+  if not C_HousingCatalog or type(C_HousingCatalog.GetCatalogEntryInfoByItem) ~= "function" then
+    return nil
+  end
+  local infoSuccess, catalogInfo = pcall(C_HousingCatalog.GetCatalogEntryInfoByItem, itemID, true) -- 住宅目录条目查询结果（要求返回拥有信息）
+  if not infoSuccess or type(catalogInfo) ~= "table" then
+    return nil
+  end
+  local quantity = tonumber(catalogInfo.quantity or catalogInfo.numOwned or catalogInfo.ownedQuantity or catalogInfo.count) -- 已拥有数量
+  if type(quantity) == "number" and quantity > 0 then
+    return true
+  end
+  local placedQuantity = tonumber(catalogInfo.numPlaced or catalogInfo.placedQuantity) -- 已摆放数量
+  if type(placedQuantity) == "number" and placedQuantity > 0 then
+    return true
+  end
+  local redeemableQuantity = tonumber(catalogInfo.remainingRedeemable or catalogInfo.redeemableQuantity) -- 可兑换数量
+  if type(redeemableQuantity) == "number" and redeemableQuantity > 0 then
+    return true
+  end
+  if quantity ~= nil or placedQuantity ~= nil or redeemableQuantity ~= nil then
+    return false
+  end
+  return nil
+end
+
+--- 读取指定掉落类型的获取状态。
+---@param itemID number 物品 ID
+---@param dropType string 掉落类型
+---@return boolean|nil isCollected 是否已收集
+local function getCollectedStateForDrop(itemID, dropType)
+  if dropType == "mount" then
+    return getMountCollectedState(itemID)
+  elseif dropType == "pet" then
+    return getPetCollectedState(itemID)
+  elseif dropType == "recipe" then
+    return getRecipeCollectedState(itemID)
+  elseif dropType == "housing_decoration" then
+    return getHousingDecorationCollectedState(itemID)
+  end
+  return nil
+end
+
+--- 获取副本指定类型掉落 itemID 集合（集合键为 itemID，值为 true）。
 ---@param journalInstanceID number
+---@param dropType string|nil 掉落类型；all 返回全部类型合并集合
 ---@return table|nil itemSet
-function AzerothCompanion.API.EncounterJournal.GetMountItemSetForInstance(journalInstanceID)
+function AzerothCompanion.API.EncounterJournal.GetDropSetForInstance(journalInstanceID, dropType)
   if type(journalInstanceID) ~= "number" then
     return nil
   end
-  if mountItemSetCache[journalInstanceID] then
-    return mountItemSetCache[journalInstanceID]
+  if type(dropType) == "table" then
+    local mergedSet = {} -- 多选类型合并集合
+    local hasItem = false -- 是否存在任一物品
+    local typeList = normalizeDropTypeSelection(dropType) -- 多选类型序列
+    for _, currentType in ipairs(typeList) do
+      local typeSet = AzerothCompanion.API.EncounterJournal.GetDropSetForInstance(journalInstanceID, currentType) -- 单类型集合
+      if type(typeSet) == "table" then
+        for itemID in pairs(typeSet) do
+          mergedSet[itemID] = true
+          hasItem = true
+        end
+      end
+    end
+    return hasItem and mergedSet or nil
   end
-  local drops = AzerothCompanion.Data and AzerothCompanion.Data.MountDrops
-  local itemList = drops and drops[journalInstanceID]
-  if type(itemList) ~= "table" then
-    return nil
+  local normalizedType = normalizeDropType(dropType) -- 归一后的掉落类型
+  dropItemSetCache[normalizedType] = dropItemSetCache[normalizedType] or {}
+  if dropItemSetCache[normalizedType][journalInstanceID] then
+    return dropItemSetCache[normalizedType][journalInstanceID]
   end
-  local itemSet = {}
-  for _, itemID in ipairs(itemList) do
-    if type(itemID) == "number" then
-      itemSet[itemID] = true
+
+  local itemSet = {} -- 当前副本命中的掉落集合
+  local hasItem = false -- 是否找到至少一个物品
+  local typeList = normalizedType == "all" and DROP_TYPE_ORDER or { normalizedType } -- 待读取类型
+  for _, currentType in ipairs(typeList) do
+    local tableName = DROP_DATA_TABLES[currentType] -- 数据表名
+    local drops = AzerothCompanion.Data and AzerothCompanion.Data[tableName] -- 导出的掉落表
+    local itemList = type(drops) == "table" and drops[journalInstanceID] or nil -- 当前副本掉落列表
+    if type(itemList) == "table" then
+      for _, itemID in ipairs(itemList) do
+        if type(itemID) == "number" then
+          itemSet[itemID] = true
+          hasItem = true
+        end
+      end
     end
   end
-  mountItemSetCache[journalInstanceID] = itemSet
+
+  if not hasItem then
+    return nil
+  end
+  dropItemSetCache[normalizedType][journalInstanceID] = itemSet
   return itemSet
 end
 
---- 检查副本是否掉落坐骑
+--- 获取副本坐骑掉落 itemID 集合（兼容旧调用方）。
+---@param journalInstanceID number
+---@return table|nil itemSet
+function AzerothCompanion.API.EncounterJournal.GetMountItemSetForInstance(journalInstanceID)
+  return AzerothCompanion.API.EncounterJournal.GetDropSetForInstance(journalInstanceID, "mount")
+end
+
+--- 检查副本是否有指定类型掉落。
+---@param journalInstanceID number 冒险指南副本 ID
+---@param dropType string|nil 掉落类型
+---@return boolean
+function AzerothCompanion.API.EncounterJournal.HasDropsForInstance(journalInstanceID, dropType)
+  return AzerothCompanion.API.EncounterJournal.GetDropSetForInstance(journalInstanceID, dropType) ~= nil
+end
+
+--- 检查副本是否有符合类型与获取状态的掉落。
+---@param journalInstanceID number 冒险指南副本 ID
+---@param dropType string|nil 掉落类型
+---@param ownership string|nil 获取状态
+---@return boolean
+function AzerothCompanion.API.EncounterJournal.HasMatchingDropsForInstance(journalInstanceID, dropType, ownership)
+  if type(journalInstanceID) ~= "number" then
+    return false
+  end
+  local normalizedOwnership = normalizeOwnership(ownership) -- 归一后的获取状态
+  local typeList, typeFilterActive = normalizeDropTypeSelection(dropType) -- 待检查类型与类型过滤态
+  if typeFilterActive ~= true and normalizedOwnership == "all" then
+    return true
+  end
+  for _, currentType in ipairs(typeList) do
+    local tableName = DROP_DATA_TABLES[currentType] -- 数据表名
+    local drops = AzerothCompanion.Data and AzerothCompanion.Data[tableName] -- 导出的掉落表
+    local itemList = type(drops) == "table" and drops[journalInstanceID] or nil -- 当前副本掉落列表
+    if type(itemList) == "table" then
+      for _, itemID in ipairs(itemList) do
+        if type(itemID) == "number" then
+          if normalizedOwnership == "all" then
+            return true
+          end
+          local isCollected = getCollectedStateForDrop(itemID, currentType) -- 当前物品获取状态
+          if doesOwnershipMatch(isCollected, normalizedOwnership) then
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
+--- 检查副本是否掉落坐骑。
 ---@param journalInstanceID number
 ---@return boolean
 function AzerothCompanion.API.EncounterJournal.HasMountDrops(journalInstanceID)
-  return AzerothCompanion.API.EncounterJournal.GetMountItemSetForInstance(journalInstanceID) ~= nil
+  return AzerothCompanion.API.EncounterJournal.HasDropsForInstance(journalInstanceID, "mount")
 end

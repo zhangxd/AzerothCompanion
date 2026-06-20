@@ -9,6 +9,8 @@ AzerothCompanion.Modules.EncounterJournal.Internal = AzerothCompanion.Modules.En
 local Internal = AzerothCompanion.Modules.EncounterJournal.Internal -- 冒险指南内部命名空间
 local MODULE_ID = "encounter_journal" -- 模块 ID
 local ACCOUNT_SCOPE = "account" -- 账号级设置 scope
+local DROP_TYPE_KEYS = { "mount", "pet", "recipe", "housing_decoration" } -- 可勾选的掉落类型
+local DROP_TYPE_SET = { mount = true, pet = true, recipe = true, housing_decoration = true } -- 掉落类型合法值集合
 
 Internal.MODULE_ID = MODULE_ID
 Internal.Runtime = AzerothCompanion.Runtime
@@ -55,6 +57,8 @@ function Internal.ResetEncounterJournalSettings()
   AzerothCompanion.Config.Reset(settingId.ENCOUNTER_JOURNAL_DEBUG, ACCOUNT_SCOPE)
   AzerothCompanion.Config.Reset(settingId.ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED, ACCOUNT_SCOPE)
   AzerothCompanion.Config.Reset(settingId.ENCOUNTER_JOURNAL_LIST_PIN_ALWAYS_VISIBLE, ACCOUNT_SCOPE)
+  AzerothCompanion.Config.Reset(settingId.ENCOUNTER_JOURNAL_DROP_FILTER_TYPE, ACCOUNT_SCOPE)
+  AzerothCompanion.Config.Reset(settingId.ENCOUNTER_JOURNAL_DROP_FILTER_OWNERSHIP, ACCOUNT_SCOPE)
 end
 
 --- 检查模块是否启用。
@@ -63,10 +67,102 @@ function Internal.IsModuleEnabled()
   return Internal.GetAccountSetting("ENCOUNTER_JOURNAL_ENABLED", true) ~= false
 end
 
---- 检查列表“仅坐骑”筛选是否启用。
+--- 检查旧列表“仅坐骑”筛选是否启用。
 ---@return boolean
 function Internal.IsMountFilterChecked()
   return Internal.GetAccountSetting("ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED", true) == true
+end
+
+--- 读取副本列表掉落类型筛选；旧 6003 布尔仅作为未迁移存档兜底。
+---@return string dropType all / mount / pet / recipe / housing_decoration
+function Internal.GetDropFilterType()
+  local selectedTypes = Internal.GetDropFilterTypes() -- 当前类型勾选集合
+  for _, dropType in ipairs(DROP_TYPE_KEYS) do
+    if selectedTypes[dropType] == true then
+      return dropType
+    end
+  end
+  return "all"
+end
+
+--- 写入副本列表掉落类型筛选。
+---@param dropType string all / mount / pet / recipe / housing_decoration
+---@return boolean
+function Internal.SetDropFilterType(dropType)
+  if dropType == "all" then
+    return Internal.SetAccountSetting("ENCOUNTER_JOURNAL_DROP_FILTER_TYPE", {})
+  end
+  if DROP_TYPE_SET[dropType] ~= true then
+    return false
+  end
+  return Internal.SetAccountSetting("ENCOUNTER_JOURNAL_DROP_FILTER_TYPE", { [dropType] = true })
+end
+
+--- 读取副本列表掉落类型勾选集合；旧单值与旧坐骑布尔会归一为集合。
+---@return table selectedTypes key 为 mount / pet / recipe / housing_decoration，值为 true
+function Internal.GetDropFilterTypes()
+  local rawValue = Internal.GetAccountSetting("ENCOUNTER_JOURNAL_DROP_FILTER_TYPE", nil) -- 当前掉落类型设置
+  local selectedTypes = {} -- 归一后的勾选集合
+  if rawValue == "all" then
+    return selectedTypes
+  elseif type(rawValue) == "string" then
+    if DROP_TYPE_SET[rawValue] == true then
+      selectedTypes[rawValue] = true
+      return selectedTypes
+    end
+  elseif type(rawValue) == "table" then
+    for _, dropType in ipairs(DROP_TYPE_KEYS) do
+      if rawValue[dropType] == true then
+        selectedTypes[dropType] = true
+      end
+    end
+    return selectedTypes
+  end
+  if Internal.GetAccountSetting("ENCOUNTER_JOURNAL_MOUNT_FILTER_ENABLED", true) == false then
+    return selectedTypes
+  end
+  selectedTypes.mount = true
+  return selectedTypes
+end
+
+--- 检查副本列表掉落类型是否被勾选。
+---@param dropType string 掉落类型
+---@return boolean
+function Internal.IsDropFilterTypeSelected(dropType)
+  return Internal.GetDropFilterTypes()[dropType] == true
+end
+
+--- 写入副本列表掉落类型勾选状态。
+---@param dropType string 掉落类型
+---@param isSelected boolean 是否选中
+---@return boolean
+function Internal.SetDropFilterTypeSelected(dropType, isSelected)
+  if DROP_TYPE_SET[dropType] ~= true then
+    return false
+  end
+  local selectedTypes = Internal.GetDropFilterTypes() -- 当前勾选集合
+  selectedTypes[dropType] = isSelected == true or nil
+  return Internal.SetAccountSetting("ENCOUNTER_JOURNAL_DROP_FILTER_TYPE", selectedTypes)
+end
+
+--- 读取副本列表获取状态筛选。
+---@return string ownership all / collected / uncollected
+function Internal.GetDropFilterOwnership()
+  local ownership = Internal.GetAccountSetting("ENCOUNTER_JOURNAL_DROP_FILTER_OWNERSHIP", "all") -- 当前获取状态
+  if ownership == "all" or ownership == "collected" or ownership == "uncollected" then
+    return ownership
+  end
+  return "all"
+end
+
+--- 写入副本列表获取状态筛选。
+---@param ownership string all / collected / uncollected
+---@return boolean
+function Internal.SetDropFilterOwnership(ownership)
+  if ownership ~= "all" and ownership ~= "collected" and ownership ~= "uncollected" then
+    return false
+  end
+  return Internal.SetAccountSetting("ENCOUNTER_JOURNAL_DROP_FILTER_OWNERSHIP", ownership)
 end
 
 --- 检查列表锁定叠加当前是否可运行。

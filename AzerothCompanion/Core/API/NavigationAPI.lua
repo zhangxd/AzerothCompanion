@@ -8,7 +8,7 @@ AzerothCompanion.API.Navigation = AzerothCompanion.API.Navigation or {}
 local WALK_LOCAL_MODE = "walk_local" -- 本地步行模式
 local WALK_LOCAL_EDGE_COST = 1 -- 本地步行边缺少距离时的最小估值，避免零成本循环
 local ACTION_TRAVEL_COST = 1 -- 传送类动作的低成本估值
-local CONDITIONAL_PUBLIC_PORTAL_COST = 180 -- 带 PlayerCondition 的公共传送门估值，避免压过已知常规交通
+local CONDITIONAL_PUBLIC_PORTAL_COST = 600 -- 带 PlayerCondition 的非目标资料片中转估值，避免压过同资料片常规交通
 local TAXI_TRAVERSED_MAP_COST = 60 -- 飞行 / 手动飞行每个经过地图的估值
 local TRANSPORT_TRAVERSED_MAP_COST = 40 -- 船、飞艇、控制台等交通每个经过地图的估值
 
@@ -280,7 +280,7 @@ local function buildWalkDistanceIncrement(edge)
   return WALK_LOCAL_EDGE_COST
 end
 
---- 读取路线边经过地图数量，供飞行和交通成本估值使用。
+--- 读取路线边覆盖的不同地图数量，供飞行和交通成本估值使用。
 ---@param edge table 路线边
 ---@return number
 local function countTraversedUiMaps(edge)
@@ -288,7 +288,17 @@ local function countTraversedUiMaps(edge)
   if type(traversedUiMapIDList) ~= "table" or #traversedUiMapIDList <= 0 then
     return 1
   end
-  return #traversedUiMapIDList
+  local seenUiMapID = {} -- 已计入成本的地图 ID 集合
+  local distinctUiMapCount = 0 -- 去重后的经过地图数量
+  for _, uiMapID in ipairs(traversedUiMapIDList) do
+    local numericUiMapID = tonumber(uiMapID) -- 当前经过地图 ID
+    local stableUiMapID = numericUiMapID or tostring(uiMapID or "") -- 兼容测试或旧数据里的非数字键
+    if stableUiMapID ~= "" and seenUiMapID[stableUiMapID] ~= true then
+      seenUiMapID[stableUiMapID] = true
+      distinctUiMapCount = distinctUiMapCount + 1
+    end
+  end
+  return distinctUiMapCount > 0 and distinctUiMapCount or 1
 end
 
 --- 判断路线边是否为带静态 PlayerCondition 门槛的中转公共传送门。
@@ -385,7 +395,9 @@ end
 --- 把原始路线边上的来源与条件背景复制到展示段，供聊天诊断解释路线来源。
 ---@param segment table|nil 展示段
 ---@param edge table|nil 原始路线边
-local function copyRouteSegmentBackgroundFields(segment, edge)
+---@param fromNode table|nil 路线边起点节点
+---@param toNode table|nil 路线边终点节点
+local function copyRouteSegmentBackgroundFields(segment, edge, fromNode, toNode)
   if type(segment) ~= "table" or type(edge) ~= "table" then
     return
   end
@@ -393,6 +405,8 @@ local function copyRouteSegmentBackgroundFields(segment, edge)
   local requirements = type(edge.requirements) == "table" and edge.requirements or nil -- 边的运行时可用性要求
   segment.source = edge.source or edge.Source
   segment.sourceID = edge.sourceID or edge.SourceID
+  segment.routeEdgeIndex = edge.routeEdgeIndex or edge.RouteEdgeIndex
+  segment.edgeID = edge.edgeID or edge.EdgeID or edge.id or edge.ID
   segment.originalMode = edge.originalMode or edge.OriginalMode
   segment.manualTravel = isManualTravelEdge(edge)
   segment.abilityTemplateID = edge.abilityTemplateID or edge.AbilityTemplateID
@@ -400,8 +414,16 @@ local function copyRouteSegmentBackgroundFields(segment, edge)
   segment.classFile = edge.classFile or edge.ClassFile or (requirements and requirements.classFile)
   segment.factionRequirement = edge.factionRequirement or edge.FactionRequirement or (requirements and requirements.faction)
   segment.playerConditionID = edge.playerConditionID or edge.PlayerConditionID
+  segment.fromNodeID = edge.from or edge.FromNodeID or edge.From or segment.from
+  segment.toNodeID = edge.to or edge.ToNodeID or edge.To or segment.to
+  segment.fromSource = edge.fromSource or edge.FromSource or (type(fromNode) == "table" and (fromNode.source or fromNode.Source) or nil)
+  segment.fromSourceID = edge.fromSourceID or edge.FromSourceID or (type(fromNode) == "table" and (fromNode.sourceID or fromNode.SourceID) or nil)
+  segment.toSource = edge.toSource or edge.ToSource or (type(toNode) == "table" and (toNode.source or toNode.Source) or nil)
+  segment.toSourceID = edge.toSourceID or edge.ToSourceID or (type(toNode) == "table" and (toNode.sourceID or toNode.SourceID) or nil)
   segment.fromTaxiNodeID = edge.fromTaxiNodeID or edge.FromTaxiNodeID
   segment.toTaxiNodeID = edge.toTaxiNodeID or edge.ToTaxiNodeID
+  segment.fromUiMapID = tonumber(segment.fromUiMapID or edge.fromUiMapID or edge.FromUiMapID or (type(fromNode) == "table" and (fromNode.uiMapID or fromNode.UiMapID) or nil))
+  segment.toUiMapID = tonumber(segment.toUiMapID or edge.toUiMapID or edge.ToUiMapID or (type(toNode) == "table" and (toNode.uiMapID or toNode.UiMapID) or nil))
   segment.fromExpansionID = edge.fromExpansionID or edge.FromExpansionID
   segment.toExpansionID = edge.toExpansionID or edge.ToExpansionID
 end
@@ -443,7 +465,7 @@ local function buildRouteSegments(routeGraph, edgePath)
         traversedUiMapNames = copyArray(edge.traversedUiMapNames or edge.TraversedUiMapNames),
         walkDistance = buildWalkDistanceIncrement(edge),
       }
-      copyRouteSegmentBackgroundFields(segment, edge)
+      copyRouteSegmentBackgroundFields(segment, edge, fromNode, toNode)
       segments[#segments + 1] = segment
     end
   end
@@ -1320,9 +1342,90 @@ function AzerothCompanion.API.Navigation.GetCurrentLocationSnapshot()
   return buildCurrentLocationSnapshot()
 end
 
+--- 按冷却 API 返回值判断能力是否可立即使用。
+--- Retail `C_Spell.GetSpellCooldown` 返回 `SpellCooldownInfo` 表；物品冷却 API 仍返回多返回值。
+---@param startTime any 冷却开始时间，0 表示无冷却
+---@param durationValue any 冷却持续秒数，0 表示无冷却
+---@param enabledValue any 冷却计时器是否启用
+---@return boolean
+local function isCooldownReadyFromValues(startTime, durationValue, enabledValue)
+  if enabledValue == false or enabledValue == 0 then
+    return false
+  end
+
+  local numericDuration = tonumber(durationValue) -- 冷却持续秒数
+  if not numericDuration then
+    return false
+  end
+  if numericDuration <= 0 then
+    return true
+  end
+
+  local numericStartTime = tonumber(startTime) -- 冷却开始时间
+  return not numericStartTime or numericStartTime <= 0
+end
+
+--- 从 Retail cooldown info 表或旧式多返回值中抽取统一字段。
+---@param cooldownInfoOrStart any `SpellCooldownInfo` 或冷却开始时间
+---@param durationValue any 旧式多返回值里的冷却持续秒数
+---@param enabledValue any 旧式多返回值里的启用标记
+---@return any startTime 冷却开始时间
+---@return any durationSeconds 冷却持续秒数
+---@return any enabledFlag 启用标记
+local function readCooldownValues(cooldownInfoOrStart, durationValue, enabledValue)
+  if type(cooldownInfoOrStart) == "table" then
+    return cooldownInfoOrStart.startTime, cooldownInfoOrStart.duration, cooldownInfoOrStart.isEnabled
+  end
+  return cooldownInfoOrStart, durationValue, enabledValue
+end
+
+--- 判断指定技能冷却是否可用；API 缺失时保持旧口径，API 失败时按不可用处理。
+---@param spellID number 技能 ID
+---@return boolean
+local function isSpellCooldownReady(spellID)
+  local spellApi = type(C_Spell) == "table" and C_Spell or nil -- Retail 技能 API 表
+  local cooldownFunction = (spellApi and spellApi.GetSpellCooldown) or GetSpellCooldown -- 技能冷却查询函数
+  if type(cooldownFunction) ~= "function" then
+    return true
+  end
+
+  local querySuccess, cooldownInfoOrStart, durationValue, enabledValue = pcall(cooldownFunction, spellID) -- 技能冷却查询结果
+  if not querySuccess then
+    return false
+  end
+
+  local evaluateSuccess, readyValue = pcall(function()
+    local startTime, durationSeconds, enabledFlag = readCooldownValues(cooldownInfoOrStart, durationValue, enabledValue) -- 统一后的技能冷却字段
+    return isCooldownReadyFromValues(startTime, durationSeconds, enabledFlag)
+  end)
+  return evaluateSuccess and readyValue == true
+end
+
+--- 判断指定物品冷却是否可用；优先使用 Retail `C_Item`，再回退旧容器 / 全局 API。
+---@param itemID number 物品 ID
+---@return boolean
+local function isItemCooldownReady(itemID)
+  local itemApi = type(C_Item) == "table" and C_Item or nil -- Retail 物品 API 表
+  local containerApi = type(C_Container) == "table" and C_Container or nil -- 旧容器 API 表
+  local cooldownFunction = (itemApi and itemApi.GetItemCooldown)
+    or (containerApi and containerApi.GetItemCooldown)
+    or GetItemCooldown -- 物品冷却查询函数
+  if type(cooldownFunction) ~= "function" then
+    return true
+  end
+
+  local querySuccess, startTime, durationSeconds, enabledFlag = pcall(cooldownFunction, itemID) -- 物品冷却查询结果
+  if not querySuccess then
+    return false
+  end
+
+  local evaluateSuccess, readyValue = pcall(isCooldownReadyFromValues, startTime, durationSeconds, enabledFlag) -- 冷却可用性判断结果
+  return evaluateSuccess and readyValue == true
+end
+
 --- 从当前角色运行时状态构建路径边可用性快照。
 --- `C_SpellBook.IsSpellInSpellBook` 是当前 Retail 推荐的 spellbook 查询入口；
---- 旧客户端或测试环境缺失时回退到 `C_SpellBook.IsSpellKnown`，调用失败按未知处理。
+--- 旧客户端或测试环境缺失时回退到 `C_SpellBook.IsSpellKnown`，调用失败或冷却未转好时按未知处理。
 ---@param spellIDList table|nil 需要确认的技能 ID 列表
 ---@return table availabilityContext 当前角色可用性快照
 function AzerothCompanion.API.Navigation.BuildCurrentCharacterAvailability(spellIDList)
@@ -1376,20 +1479,20 @@ function AzerothCompanion.API.Navigation.BuildCurrentCharacterAvailability(spell
       local numericSpellID = tonumber(spellID) -- 技能 ID
       if numericSpellID then
         local success, isKnown = pcall(spellCheckFn, numericSpellID) -- 技能已学查询结果
-        if success and isKnown == true then
+        if success and isKnown == true and isSpellCooldownReady(numericSpellID) then
           availabilityContext.knownSpellByID[numericSpellID] = true
         end
       end
     end
   end
 
-  -- 炉石（SpellID 8690）由物品触发，不依赖于法术书；检查玩家背包中是否有炉石物品（ItemID 6948）
+  -- 炉石（SpellID 8690）由物品触发，不依赖于法术书；检查玩家背包中是否有炉石物品（ItemID 6948）且冷却可用
   if not availabilityContext.knownSpellByID[8690] then
     local itemApi = type(C_Item) == "table" and C_Item or nil
     local getItemCountFn = (itemApi and itemApi.GetItemCount) or GetItemCount
     if type(getItemCountFn) == "function" then
       local itemSuccess, itemCount = pcall(getItemCountFn, 6948)
-      if itemSuccess and tonumber(itemCount) and tonumber(itemCount) > 0 then
+      if itemSuccess and tonumber(itemCount) and tonumber(itemCount) > 0 and isItemCooldownReady(6948) then
         availabilityContext.knownSpellByID[8690] = true
       end
     end
@@ -1434,14 +1537,67 @@ local function buildRouteMapCandidateSet(mapID, mapNodes)
   return candidateSet
 end
 
+--- 按当前地图与父链坐标命中结果建立路线地图候选。
+---@param mapID number|nil 原始地图 ID
+---@param pointX number|nil 地图坐标 X
+---@param pointY number|nil 地图坐标 Y
+---@param mapNodes table 地图节点表
+---@return table, table
+local function buildPositionRouteMapCandidateList(mapID, pointX, pointY, mapNodes)
+  local candidateList = {} -- 点位命中的候选地图记录
+  local candidateNameByMapID = {} -- 候选地图显示名
+  local searchSet = {} -- 已查询的地图 ID 集合
+  local mapApi = type(C_Map) == "table" and C_Map or nil -- 地图 API 表
+  local getMapInfoAtPosition = mapApi and mapApi.GetMapInfoAtPosition or nil -- 指定点位命中的地图信息
+  if not isNormalizedPosition(pointX, pointY) or type(getMapInfoAtPosition) ~= "function" then
+    return candidateList, candidateNameByMapID
+  end
+
+  local function appendPositionCandidate(searchMapID, sourceRank)
+    local numericSearchMapID = tonumber(searchMapID) -- 查询用地图 ID
+    if not numericSearchMapID or numericSearchMapID <= 0 or searchSet[numericSearchMapID] then
+      return
+    end
+    searchSet[numericSearchMapID] = true
+    -- GetMapInfoAtPosition 会按传入地图坐标返回子图、邻图或当前图；父图重查可避开旧壳地图。
+    local success, mapInfo = pcall(getMapInfoAtPosition, numericSearchMapID, pointX, pointY) -- 点位命中的地图信息
+    local resolvedMapID = success and type(mapInfo) == "table" and tonumber(mapInfo.mapID) or nil -- 命中的地图 ID
+    if resolvedMapID and resolvedMapID > 0 then
+      candidateList[#candidateList + 1] = {
+        mapID = resolvedMapID,
+        sourceRank = tonumber(sourceRank) or 99,
+      }
+      if type(mapInfo.name) == "string" and mapInfo.name ~= "" then
+        candidateNameByMapID[resolvedMapID] = mapInfo.name
+      end
+    end
+  end
+
+  local currentMapID = tonumber(mapID) -- 当前查询地图 ID
+  local guardCount = 0 -- 父链保护计数
+  while currentMapID and currentMapID > 0 and guardCount < 16 do
+    appendPositionCandidate(currentMapID, guardCount + 1)
+    local nodeDef = type(mapNodes) == "table" and mapNodes[currentMapID] or nil -- 当前地图定义
+    local parentMapID = tonumber(nodeDef and nodeDef.ParentUiMapID) -- 父地图 ID
+    if not parentMapID or parentMapID <= 0 or parentMapID == currentMapID then
+      break
+    end
+    currentMapID = parentMapID
+    guardCount = guardCount + 1
+  end
+  -- guardCount >= 16: 父链异常过长，静默截断以避免死循环
+
+  return candidateList, candidateNameByMapID
+end
+
 --- 统计每个 UiMap 节点参与的路线边数量。
 ---@param edgeList table|nil 路线边列表
 ---@return table
 local function buildEdgeDegreeByUiMapID(edgeList)
   local degreeByUiMapID = {} -- 地图节点关联边数量
   for _, edge in ipairs(type(edgeList) == "table" and edgeList or {}) do
-    local fromUiMapID = tonumber(edge and edge.fromUiMapID) -- 边起点地图 ID
-    local toUiMapID = tonumber(edge and edge.toUiMapID) -- 边终点地图 ID
+    local fromUiMapID = tonumber(edge and (edge.fromUiMapID or edge.FromUiMapID)) -- 边起点地图 ID
+    local toUiMapID = tonumber(edge and (edge.toUiMapID or edge.ToUiMapID)) -- 边终点地图 ID
     if fromUiMapID and fromUiMapID > 0 then
       degreeByUiMapID[fromUiMapID] = (degreeByUiMapID[fromUiMapID] or 0) + 1
     end
@@ -1454,23 +1610,36 @@ end
 
 --- 将地图 ID 解析为更适合参与导航的路线节点地图 ID。
 ---@param rawMapID number|nil 原始地图 ID
----@param resolvedAtPositionMapID number|nil 指定点位解析出的地图 ID
+---@param positionCandidateList table|number|nil 指定点位解析出的地图候选
 ---@param mapNodes table 地图节点表
 ---@param edgeDegreeByUiMapID table 地图边数量表
 ---@return number|nil
-local function resolveRouteMapID(rawMapID, resolvedAtPositionMapID, mapNodes, edgeDegreeByUiMapID)
+local function resolveRouteMapID(rawMapID, positionCandidateList, mapNodes, edgeDegreeByUiMapID)
   local searchMapIDList = {} -- 需要展开候选的地图 ID 列表
   local searchSet = {} -- 已加入的地图 ID 集合
-  local function appendSearchMapID(mapID)
+  local function appendSearchMapID(mapID, sourceRank)
     local numericMapID = tonumber(mapID) -- 目标地图 ID
     if numericMapID and numericMapID > 0 and not searchSet[numericMapID] then
       searchSet[numericMapID] = true
-      searchMapIDList[#searchMapIDList + 1] = numericMapID
+      searchMapIDList[#searchMapIDList + 1] = {
+        mapID = numericMapID,
+        sourceRank = tonumber(sourceRank) or 99,
+      }
     end
   end
 
-  appendSearchMapID(rawMapID)
-  appendSearchMapID(resolvedAtPositionMapID)
+  appendSearchMapID(rawMapID, 0)
+  if type(positionCandidateList) == "table" then
+    for _, candidateDef in ipairs(positionCandidateList) do
+      if type(candidateDef) == "table" then
+        appendSearchMapID(candidateDef.mapID, candidateDef.sourceRank)
+      else
+        appendSearchMapID(candidateDef, 1)
+      end
+    end
+  else
+    appendSearchMapID(positionCandidateList, 1)
+  end
 
   local rankedCandidateList = {} -- 排序后的候选地图列表
   local rankedSet = {} -- 已加入候选的地图 ID 集合
@@ -1490,12 +1659,14 @@ local function resolveRouteMapID(rawMapID, resolvedAtPositionMapID, mapNodes, ed
     end
   end
 
-  for _, searchMapID in ipairs(searchMapIDList) do
+  for _, searchDef in ipairs(searchMapIDList) do
+    local searchMapID = tonumber(searchDef and searchDef.mapID) -- 当前展开地图 ID
+    local searchSourceRank = tonumber(searchDef and searchDef.sourceRank) or 99 -- 当前来源优先级
     local parentCandidateSet = buildRouteMapCandidateSet(searchMapID, mapNodes) -- 原始地图与父链候选
-    pushRankedCandidate(searchMapID, 0)
+    pushRankedCandidate(searchMapID, searchSourceRank)
     for candidateMapID in pairs(parentCandidateSet) do
       if candidateMapID ~= searchMapID then
-        pushRankedCandidate(candidateMapID, 1)
+        pushRankedCandidate(candidateMapID, searchSourceRank + 10)
       end
     end
   end
@@ -1562,17 +1733,9 @@ local function resolveConcreteTarget(target)
     return target
   end
 
-  local mapApi = type(C_Map) == "table" and C_Map or nil -- 地图 API 表
-  local getMapInfoAtPosition = mapApi and mapApi.GetMapInfoAtPosition or nil -- 指定点位命中的更具体地图
-  local resolvedAtPositionMapID = nil -- 指定点位解析出的更具体地图 ID
-  local resolvedName = nil -- 指定点位解析出的地图名
-  if isNormalizedPosition(targetX, targetY) and type(getMapInfoAtPosition) == "function" then
-    local success, mapInfo = pcall(getMapInfoAtPosition, targetMapID, targetX, targetY) -- 命中的地图信息
-    resolvedAtPositionMapID = success and type(mapInfo) == "table" and tonumber(mapInfo.mapID) or nil
-    resolvedName = success and type(mapInfo) == "table" and mapInfo.name or nil
-  end
+  local positionCandidateList, positionNameByMapID = buildPositionRouteMapCandidateList(targetMapID, targetX, targetY, mapNodes) -- 点位解析候选
 
-  local resolvedMapID = resolveRouteMapID(targetMapID, resolvedAtPositionMapID, mapNodes, edgeDegreeByUiMapID) -- 参与导航的目标地图 ID
+  local resolvedMapID = resolveRouteMapID(targetMapID, positionCandidateList, mapNodes, edgeDegreeByUiMapID) -- 参与导航的目标地图 ID
   if not resolvedMapID or resolvedMapID <= 0 or resolvedMapID == targetMapID then
     return target
   end
@@ -1582,6 +1745,7 @@ local function resolveConcreteTarget(target)
     resolvedTarget[key] = value
   end
   resolvedTarget.uiMapID = resolvedMapID
+  local resolvedName = type(positionNameByMapID) == "table" and positionNameByMapID[resolvedMapID] or nil -- 点位解析出的地图名
   if type(resolvedName) == "string" and resolvedName ~= "" then
     resolvedTarget.name = resolvedName
   elseif type(mapNodes[resolvedMapID]) == "table" and type(mapNodes[resolvedMapID].Name_lang) == "string" then
@@ -1772,11 +1936,12 @@ end
 ---@param routeGraph table 正在构建的路径图
 ---@param edgeList table|nil 边定义列表
 local function addRouteGraphEdges(routeGraph, edgeList)
-  for _, edge in ipairs(type(edgeList) == "table" and edgeList or {}) do
+  for routeEdgeIndex, edge in ipairs(type(edgeList) == "table" and edgeList or {}) do
     local edgeCopy = {} -- 运行时路线边副本
     for key, value in pairs(type(edge) == "table" and edge or {}) do
       edgeCopy[key] = value
     end
+    edgeCopy.routeEdgeIndex = routeEdgeIndex
     edgeCopy.label = buildRouteEdgeLabel(edgeCopy) or edgeCopy.label
     edgeCopy.stepCost = tonumber(edgeCopy.stepCost or edgeCopy.StepCost) or 1
     edgeCopy.mode = edgeCopy.mode or edgeCopy.Mode or "unknown"
@@ -1798,18 +1963,11 @@ local function addCurrentLocationEdges(routeGraph, availabilityContext, routeNod
 
   local currentX = tonumber(availabilityContext and availabilityContext.currentX) -- 当前角色 X
   local currentY = tonumber(availabilityContext and availabilityContext.currentY) -- 当前角色 Y
-  local resolvedAtPositionMapID = nil -- 当前点位命中的更具体地图 ID
-  local mapApi = type(C_Map) == "table" and C_Map or nil -- 地图 API 表
-  local getMapInfoAtPosition = mapApi and mapApi.GetMapInfoAtPosition or nil -- 指定点位命中的更具体地图
-  if isNormalizedPosition(currentX, currentY) and type(getMapInfoAtPosition) == "function" then
-    local success, mapInfo = pcall(getMapInfoAtPosition, currentMapID, currentX, currentY) -- 当前点位命中的地图信息
-    resolvedAtPositionMapID = success and type(mapInfo) == "table" and tonumber(mapInfo.mapID) or nil
-  end
-
   local mapNodes = AzerothCompanion.Data and AzerothCompanion.Data.NavigationMapNodes and AzerothCompanion.Data.NavigationMapNodes.nodes or {} -- 地图基础节点
   local routeEdgeData = AzerothCompanion.Data and AzerothCompanion.Data.NavigationRouteEdges or {} -- 契约导出的统一路线边数据
   local edgeDegreeByUiMapID = buildEdgeDegreeByUiMapID(routeEdgeData.edges) -- 地图边数量
-  local resolvedCurrentMapID = resolveRouteMapID(currentMapID, resolvedAtPositionMapID, mapNodes, edgeDegreeByUiMapID) -- 可参与导航的当前地图 ID
+  local positionCandidateList = buildPositionRouteMapCandidateList(currentMapID, currentX, currentY, mapNodes) -- 点位解析候选
+  local resolvedCurrentMapID = resolveRouteMapID(currentMapID, positionCandidateList, mapNodes, edgeDegreeByUiMapID) -- 可参与导航的当前地图 ID
 
   local currentNodeID = findRouteNodeIDBySourceID(routeNodeLookupBySource, "uimap", resolvedCurrentMapID, "map_anchor") -- 当前地图对应的 route node ID
   local currentNode = currentNodeID and routeGraph.nodes[currentNodeID] or nil -- 当前地图 route node

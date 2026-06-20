@@ -13,6 +13,7 @@ local CreateFrame = Internal.CreateFrame -- 统一建帧入口
 
 local questEventFrame = nil -- quest 模块事件 Frame
 local questHostFrame = nil -- quest 主界面根 Frame
+local QUEST_RUNTIME_EVENTS = { "QUEST_TURNED_IN", "QUEST_LOG_UPDATE" } -- 会改变任务列表内容的运行时事件
 
 local questInspectorUiState = {
   requestToken = 0,
@@ -65,6 +66,28 @@ local function normalizeRecentCompletedLimit(rawValue)
     return 30
   end
   return numericValue
+end
+
+--- 失效任务运行时缓存，保证界面刷新前读取到最新任务内容。
+---@param reasonText string 失效原因
+local function invalidateQuestRuntimeCaches(reasonText)
+  local questlinesApi = AzerothCompanion.API and AzerothCompanion.API.Questlines or nil -- 任务线领域 API
+  if type(questlinesApi) == "table" and type(questlinesApi.InvalidateRuntimeCaches) == "function" then
+    questlinesApi.InvalidateRuntimeCaches(reasonText)
+  end
+end
+
+--- 请求刷新当前可见的 quest 主界面内容。
+local function requestVisibleQuestViewRefresh()
+  local questView = getQuestView() -- 任务视图对象
+  if type(questView) ~= "table" or questView.selected ~= true then
+    return
+  end
+  if type(questView.requestRender) == "function" then
+    questView:requestRender()
+  elseif type(questView.refresh) == "function" then
+    questView:refresh()
+  end
 end
 
 --- 确保 quest 主界面已创建。
@@ -355,14 +378,16 @@ local function buildQuestInspectorSettingsPage(box)
   return blockHeight
 end
 
-local function setQuestTurnInEventEnabled(enabled)
+local function setQuestRuntimeEventsEnabled(enabled)
   if not questEventFrame then
     return
   end
-  if enabled then
-    questEventFrame:RegisterEvent("QUEST_TURNED_IN")
-  else
-    questEventFrame:UnregisterEvent("QUEST_TURNED_IN")
+  for _, eventName in ipairs(QUEST_RUNTIME_EVENTS) do
+    if enabled then
+      questEventFrame:RegisterEvent(eventName)
+    else
+      questEventFrame:UnregisterEvent(eventName)
+    end
   end
 end
 
@@ -372,18 +397,25 @@ local function registerIntegration()
   end
 
   questEventFrame = CreateFrame("Frame", "AzerothCompanionQuestHost") -- quest 事件主 Frame
-  setQuestTurnInEventEnabled(Internal.IsModuleEnabled())
+  setQuestRuntimeEventsEnabled(Internal.IsModuleEnabled())
   questEventFrame:SetScript("OnEvent", function(_, eventName, ...)
-    if eventName ~= "QUEST_TURNED_IN" then
+    if eventName ~= "QUEST_TURNED_IN" and eventName ~= "QUEST_LOG_UPDATE" then
       return
     end
-    local questID = ... -- 完成事件任务 ID
-    if type(questID) ~= "number" or questID <= 0 then
-      return
-    end
+
+    invalidateQuestRuntimeCaches(eventName)
     local questView = getQuestView() -- 任务视图对象
-    if type(questView) == "table" and type(questView.recordRecentlyCompletedQuest) == "function" then
+    local recentCompletedRecorded = false -- 是否已由最近完成记录触发刷新
+    if eventName == "QUEST_TURNED_IN" and type(questView) == "table" and type(questView.recordRecentlyCompletedQuest) == "function" then
+      local questID = ... -- 完成事件任务 ID
+      if type(questID) ~= "number" or questID <= 0 then
+        return
+      end
       questView:recordRecentlyCompletedQuest(questID)
+      recentCompletedRecorded = questView.selected == true and questView.selectedModeKey == "active_log"
+    end
+    if recentCompletedRecorded ~= true then
+      requestVisibleQuestViewRefresh()
     end
   end)
 end
@@ -468,7 +500,7 @@ AzerothCompanion.RegisterModule({
     local messageKey = enabled and "SETTINGS_MODULE_ENABLED_FMT" or "SETTINGS_MODULE_DISABLED_FMT" -- 提示键
     AzerothCompanion.API.Chat.PrintAddonMessage(string.format(localeTable[messageKey] or "%s", localeTable.MODULE_QUEST or MODULE_ID))
 
-    setQuestTurnInEventEnabled(enabled)
+    setQuestRuntimeEventsEnabled(enabled)
     if not enabled then
       closeQuestMainFrame()
       return
