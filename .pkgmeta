@@ -1,0 +1,10 @@
+package-as: AzerothCompanion
+
+move-folders:
+  AzerothCompanion/AzerothCompanion: AzerothCompanion
+
+ignore:
+  - about
+  - CHANGELOG.md
+  - LICENSE
+  - README.md
