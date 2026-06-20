@@ -666,6 +666,7 @@ local function buildDiagnosticBackgroundText(segmentInfo)
   end
 
   local sourceText = trimText(segmentInfo.source or segmentInfo.Source) -- 来源类型
+  local evidenceLevelText = trimText(segmentInfo.evidenceLevel or segmentInfo.EvidenceLevel) -- 路线证据等级
   local sourceIDText = trimText(segmentInfo.sourceID or segmentInfo.SourceID) -- 来源主键
   local routeEdgeIndexText = trimText(segmentInfo.routeEdgeIndex or segmentInfo.RouteEdgeIndex) -- 统一路线边表下标
   local edgeIDText = trimText(segmentInfo.edgeID or segmentInfo.EdgeID or segmentInfo.id or segmentInfo.ID) -- 路线边 ID
@@ -687,6 +688,7 @@ local function buildDiagnosticBackgroundText(segmentInfo)
   local fromTaxiNodeIDText = trimText(segmentInfo.fromTaxiNodeID or segmentInfo.FromTaxiNodeID) -- 起点飞行点 ID
   local toTaxiNodeIDText = trimText(segmentInfo.toTaxiNodeID or segmentInfo.ToTaxiNodeID) -- 终点飞行点 ID
   local hasBackground = sourceText ~= "" -- 是否存在任一背景字段
+    or evidenceLevelText ~= ""
     or sourceIDText ~= ""
     or routeEdgeIndexText ~= ""
     or edgeIDText ~= ""
@@ -714,6 +716,7 @@ local function buildDiagnosticBackgroundText(segmentInfo)
   end
 
   appendDiagnosticBackgroundField(textList, "source", sourceText)
+  appendDiagnosticBackgroundField(textList, "evidenceLevel", evidenceLevelText)
   appendDiagnosticBackgroundField(textList, "sourceID", sourceIDText)
   appendDiagnosticBackgroundField(textList, "routeEdgeIndex", routeEdgeIndexText)
   appendDiagnosticBackgroundField(textList, "edgeID", edgeIDText)

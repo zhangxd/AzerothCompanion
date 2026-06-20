@@ -1,6 +1,6 @@
 # AzerothCompanion - 艾泽拉斯助手
 
-当前版本：0.1.2
+当前版本：0.1.3
 
 `AzerothCompanion`（艾泽拉斯助手）是面向魔兽世界正式服（Retail）的界面辅助插件，聚焦界面辅助、冒险手册增强、地图线路导航和实验性任务浏览。
 
@@ -40,6 +40,7 @@
 
 - 世界地图提供“规划路线”入口。
 - 导航会按当前角色阵营、已开航点、已学法术冷却状态和炉石绑定点过滤可用路径；法师幽暗城 / 奥格瑞玛等职业传送与传送门路线已恢复导出可验证结构化落点。
+- 当静态数据尚不能证明某些公共传送条件时，导航会把结果降级为参考路线或提示暂无可靠路线，避免把不确定路径当作确定路线。
 - 路线结果通过顶部路径 UI 展示起点、步骤和终点。
 - 当前运行时支持本地步行、Taxi、船 / 飞艇等公共交通、公共传送门、炉石和职业旅行技能。
 
@@ -63,7 +64,7 @@
 
 ## 安装
 
-1. 在 GitHub Releases 下载 `AzerothCompanion-0.1.2.zip`。
+1. 在 GitHub Releases 下载 `AzerothCompanion-0.1.3.zip`。
 2. 解压后确认目录结构为 `_retail_\Interface\AddOns\AzerothCompanion\AzerothCompanion.toc`。
 3. 启动游戏，在插件列表中启用 **AzerothCompanion**。
 

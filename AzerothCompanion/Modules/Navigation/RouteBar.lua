@@ -1074,8 +1074,9 @@ end
 
 --- 构建用于聊天诊断的逐段显示模型。
 ---@param segmentList table|nil 路线分段列表
+---@param evidenceLevel string|nil 路线证据等级
 ---@return table
-local function buildDiagnosticSegmentList(segmentList)
+local function buildDiagnosticSegmentList(segmentList, evidenceLevel)
   local diagnosticSegmentList = {} -- 逐段诊断显示模型
   for segmentIndex, segment in ipairs(type(segmentList) == "table" and segmentList or {}) do
     local diagnosticSegment = { -- 当前诊断段
@@ -1084,6 +1085,7 @@ local function buildDiagnosticSegmentList(segmentList)
       fromText = buildDiagnosticSegmentEndpointText(segment, false),
       toText = buildDiagnosticSegmentEndpointText(segment, true),
       traversedMapText = buildDiagnosticTraversedMapText(segment),
+      evidenceLevel = evidenceLevel,
     }
     copyDiagnosticSegmentBackgroundFields(diagnosticSegment, segment)
     diagnosticSegmentList[#diagnosticSegmentList + 1] = diagnosticSegment
@@ -1099,6 +1101,7 @@ end
 ---@return table
 buildRouteDisplayModel = function(routeResult, routeTarget, startLocationSnapshot, currentLocationSnapshot)
   local segmentList = type(routeResult) == "table" and routeResult.segments or {} -- 路线分段列表
+  local evidenceLevel = type(routeResult) == "table" and routeResult.evidenceLevel or nil -- 路线证据等级
   local stepIndex, arrived, deviated = resolveLiveProgress(routeResult, routeTarget, currentLocationSnapshot) -- 实时进度
   local routeState = {
     routeResult = routeResult,
@@ -1129,7 +1132,8 @@ buildRouteDisplayModel = function(routeResult, routeTarget, startLocationSnapsho
     nodeList = nodeList,
     nodeSummaryText = nodeSummaryText,
     historySummaryText = string.format("%s步 | %s", tostring(totalSteps), nodeSummaryText),
-    diagnosticSegments = buildDiagnosticSegmentList(segmentList),
+    diagnosticSegments = buildDiagnosticSegmentList(segmentList, evidenceLevel),
+    evidenceLevel = evidenceLevel,
     currentStepIndex = stepIndex,
     arrived = arrived,
     deviated = deviated,

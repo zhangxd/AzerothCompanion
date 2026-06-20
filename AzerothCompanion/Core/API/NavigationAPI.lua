@@ -116,6 +116,24 @@ local function readEdgeMode(edge)
   return tostring((type(edge) == "table" and (edge.mode or edge.Mode)) or "unknown")
 end
 
+--- 判断公共交通边是否带有运行时尚不能证明的玩家条件。
+---@param edge table|nil 路线边
+---@return boolean
+local function hasUnknownPublicCondition(edge)
+  local edgeMode = readEdgeMode(edge) -- 路线边模式
+  if edgeMode ~= "transport" and edgeMode ~= "public_portal" then
+    return false
+  end
+
+  local playerConditionID = tonumber(type(edge) == "table" and (edge.playerConditionID or edge.PlayerConditionID)) -- 玩家条件 ID
+  if not playerConditionID or playerConditionID <= 0 then
+    return false
+  end
+
+  local factionRequirement = trimText(type(edge) == "table" and (edge.factionRequirement or edge.FactionRequirement) or nil) -- 已可证明的阵营条件
+  return factionRequirement == ""
+end
+
 --- 读取路线边显示标签。
 ---@param edge table|nil 路线边
 ---@return string
@@ -762,10 +780,12 @@ end
 --- 判断单条边是否满足当前角色可用性要求。
 ---@param edge table 路径边
 ---@param availabilityContext table|nil 当前角色可用性快照
+---@param availabilityOptions table|nil 可用性判定选项
 ---@return boolean
-local function isEdgeAvailable(edge, availabilityContext)
+local function isEdgeAvailable(edge, availabilityContext, availabilityOptions)
   local requirements = edge and edge.requirements or nil -- 边可用性要求
   local context = availabilityContext or {} -- 当前角色上下文
+  local options = availabilityOptions or {} -- 可用性判定选项
   if type(requirements) ~= "table" then
     requirements = nil
   else
@@ -785,6 +805,10 @@ local function isEdgeAvailable(edge, availabilityContext)
 
   local factionRequirement = edge and edge.FactionRequirement or nil -- 静态公共边的阵营限制
   if factionRequirement and factionRequirement ~= context.faction then
+    return false
+  end
+
+  if options.allowUnknownPublicConditionEdges ~= true and hasUnknownPublicCondition(edge) then
     return false
   end
 
@@ -1024,9 +1048,10 @@ end
 ---@param allowTaxiManualTravelFallback boolean|nil 是否允许不可用 taxi 边标记为手动飞行
 ---@param targetUiMapID number|nil 当前目标地图 ID；用于区分目标传送门与中转传送门
 ---@param targetExpansionID number|nil 当前目标资料片 ID；用于优先进入目标资料片的条件传送门
+---@param searchOptions table|nil 搜索选项
 ---@return table|nil routeResult 成功时包含 `totalSteps`、`segments`、`rawNodePath`、`rawEdgePath`
 ---@return table|nil errorObject 失败时包含 `code`
-local function findShortestPath(routeGraph, startNodeId, targetNodeId, availabilityContext, allowTaxiManualTravelFallback, targetUiMapID, targetExpansionID)
+local function findShortestPath(routeGraph, startNodeId, targetNodeId, availabilityContext, allowTaxiManualTravelFallback, targetUiMapID, targetExpansionID, searchOptions)
   if type(routeGraph) ~= "table" or type(routeGraph.nodes) ~= "table" then
     return nil, { code = "NAVIGATION_ERR_BAD_GRAPH" }
   end
@@ -1036,6 +1061,7 @@ local function findShortestPath(routeGraph, startNodeId, targetNodeId, availabil
 
   local edgeListByFrom = type(routeGraph.edgeListByFrom) == "table" and routeGraph.edgeListByFrom or buildEdgeListByFrom(routeGraph.edges) -- 起点到边列表索引
   local shouldCheckAvailability = availabilityContext ~= nil -- 是否在搜索展开时过滤当前角色不可用边
+  local availabilityOptions = type(searchOptions) == "table" and searchOptions or {} -- 本次搜索的可用性选项
   local bestStateByKey = {} -- 每个状态键的当前最优状态
   local openStateList = {} -- 待展开状态列表
 
@@ -1070,7 +1096,7 @@ local function findShortestPath(routeGraph, startNodeId, targetNodeId, availabil
 
     for _, edge in ipairs(edgeListByFrom[currentState.nodeId] or {}) do
       local edgeMode = readEdgeMode(edge) -- 当前边模式
-      local isAvailable = (not shouldCheckAvailability) or isEdgeAvailable(edge, availabilityContext) -- 当前角色是否可直接使用此边
+      local isAvailable = (not shouldCheckAvailability) or isEdgeAvailable(edge, availabilityContext, availabilityOptions) -- 当前角色是否可直接使用此边
       local routeEdge = edge -- 实际进入搜索的边
       if not isAvailable and allowTaxiManualTravelFallback == true and edgeMode == "taxi" then
         routeEdge = buildManualTaxiTravelEdge(routeGraph, edge)
@@ -2277,9 +2303,37 @@ function AzerothCompanion.API.Navigation.PlanRouteToMapTarget(target, availabili
   end
   local routeGraph = buildMapTargetRouteGraph(resolvedTarget, availabilityContext) -- 第一版目标路径图
   local targetExpansionID = findRouteGraphExpansionIDByUiMapID(routeGraph, targetMapID) -- 目标资料片 ID
-  local routeResult, errorObject = findShortestPath(routeGraph, "current", "target", availabilityContext or {}, false, targetMapID, targetExpansionID) -- 当前角色真实可用路线
-  if routeResult or type(errorObject) ~= "table" or errorObject.code ~= "NAVIGATION_ERR_NO_ROUTE" then
-    return routeResult, errorObject
+  local strictRouteResult, strictErrorObject = findShortestPath(routeGraph, "current", "target", availabilityContext or {}, false, targetMapID, targetExpansionID, {
+    allowUnknownPublicConditionEdges = false,
+  }) -- 当前角色真实可用路线
+  if strictRouteResult then
+    strictRouteResult.evidenceLevel = "strict"
+    return strictRouteResult, nil
   end
-  return findShortestPath(routeGraph, "current", "target", availabilityContext or {}, true, targetMapID, targetExpansionID)
+  if type(strictErrorObject) ~= "table" or strictErrorObject.code ~= "NAVIGATION_ERR_NO_ROUTE" then
+    return strictRouteResult, strictErrorObject
+  end
+
+  local referenceRouteResult, referenceErrorObject = findShortestPath(routeGraph, "current", "target", availabilityContext or {}, false, targetMapID, targetExpansionID, {
+    allowUnknownPublicConditionEdges = true,
+  }) -- 参考路线：先允许未知公共条件，但仍不使用手动飞行 fallback
+  if referenceRouteResult then
+    referenceRouteResult.evidenceLevel = "reference"
+    return referenceRouteResult, nil
+  end
+  if type(referenceErrorObject) ~= "table" or referenceErrorObject.code ~= "NAVIGATION_ERR_NO_ROUTE" then
+    return referenceRouteResult, referenceErrorObject
+  end
+
+  local manualReferenceRouteResult, manualReferenceErrorObject = findShortestPath(routeGraph, "current", "target", availabilityContext or {}, true, targetMapID, targetExpansionID, {
+    allowUnknownPublicConditionEdges = true,
+  }) -- 最后才允许手动飞行 fallback，避免它抢过结构化公共交通链路
+  if manualReferenceRouteResult then
+    manualReferenceRouteResult.evidenceLevel = "reference"
+    return manualReferenceRouteResult, nil
+  end
+  if type(manualReferenceErrorObject) == "table" and manualReferenceErrorObject.code == "NAVIGATION_ERR_NO_ROUTE" then
+    manualReferenceErrorObject.evidenceLevel = "blocked"
+  end
+  return manualReferenceRouteResult, manualReferenceErrorObject
 end
