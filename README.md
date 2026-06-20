@@ -1,6 +1,6 @@
 # AzerothCompanion - 艾泽拉斯助手
 
-当前版本 / Current version: 0.1.3
+当前版本 / Current version: 0.1.4
 
 ## 中文说明
 
@@ -66,7 +66,7 @@
 
 ### 安装
 
-1. 在 GitHub Releases 下载 `AzerothCompanion-0.1.3.zip`。
+1. 在 GitHub Releases 下载 `AzerothCompanion-0.1.4.zip`。
 2. 解压后确认目录结构为 `_retail_\Interface\AddOns\AzerothCompanion\AzerothCompanion.toc`。
 3. 启动游戏，在插件列表中启用 **AzerothCompanion**。
 
@@ -157,7 +157,7 @@
 
 ### Installation
 
-1. Download `AzerothCompanion-0.1.3.zip` from GitHub Releases.
+1. Download `AzerothCompanion-0.1.4.zip` from GitHub Releases.
 2. Extract it and confirm the directory structure is `_retail_\Interface\AddOns\AzerothCompanion\AzerothCompanion.toc`.
 3. Start the game and enable **AzerothCompanion** in the addon list.
 
