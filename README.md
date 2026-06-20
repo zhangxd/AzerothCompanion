@@ -48,7 +48,7 @@
 
 #### 任务浏览（实验性）
 
-- 任务模块目前为实验性功能，仅作为测试功能提供。
+- 任务模块目前为实验性功能，后续仍可能继续调整。
 - 提供独立任务界面，可查看当前任务和最近完成任务。
 - 支持按资料片和地图浏览任务线，并在同一界面展开任务列表。
 - 支持任务线 / 任务搜索、任务详情弹框和返回对应地图 / 任务线。
@@ -139,7 +139,7 @@
 
 #### Quest Browsing (Experimental)
 
-- The quest module is experimental and provided as a test feature.
+- The quest module is experimental and may continue to evolve in future updates.
 - Provides a standalone quest UI for current quests and recently completed quests.
 - Supports browsing questlines by expansion and map, with expandable quest lists in the same panel.
 - Supports questline / quest search, quest detail popups, and returning to the related map or questline.
