@@ -1,10 +1,13 @@
 package-as: AzerothCompanion
 
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
 move-folders:
   AzerothCompanion/AzerothCompanion: AzerothCompanion
 
 ignore:
   - about
-  - CHANGELOG.md
   - LICENSE
   - README.md
